@@ -78,5 +78,22 @@ class TestBuildHtml(unittest.TestCase):
         self.assertIn("SFO-Tokyo", html)
 
 
+class TestHtmlEscaping(unittest.TestCase):
+    def test_malicious_name_airline_and_link_are_neutralized(self):
+        h = {"alert_name": "<img src=x onerror=alert(1)>", "origin": "SFO", "dest": "NRT",
+             "date": "2026-11-20", "airlines": "<b>NH</b>", "program": "aeroplan",
+             "miles": 82000, "seats": 2, "direct": True, "link": "javascript:alert(1)"}
+        out = notify.build_html([h])
+        self.assertNotIn("<img src=x", out)        # free-form name escaped
+        self.assertIn("&lt;img src=x", out)
+        self.assertNotIn("<b>NH</b>", out)          # API airline escaped
+        self.assertNotIn('href="javascript:', out)  # non-https link is not linkified
+
+    def test_https_link_is_linkified(self):
+        h = {"origin": "SFO", "dest": "NRT", "date": "d", "airlines": "NH",
+             "program": "x", "miles": 1, "seats": 1, "link": "https://seats.aero/ok"}
+        self.assertIn('href="https://seats.aero/ok"', notify.build_html([h]))
+
+
 if __name__ == "__main__":
     unittest.main()

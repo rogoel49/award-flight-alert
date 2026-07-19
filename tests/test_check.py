@@ -1,4 +1,6 @@
+import json
 import os
+import shutil
 import stat
 import tempfile
 import unittest
@@ -6,7 +8,7 @@ import unittest
 import check
 
 CFG = {"seats_aero_url_template": "https://seats.aero/search?origins={origin}&destinations={dest}&startDate={date}&endDate={date}"}
-PARAMS = {"max_miles": 90000, "min_seats": 1, "only_direct": False}
+PARAMS = {"cabin": "business", "max_miles": 90000, "min_seats": 1, "only_direct": False}
 
 
 def native_row(**over):
@@ -63,24 +65,77 @@ class TestFilterRows(unittest.TestCase):
                                            PARAMS, {"AI"}, CFG, "SFO"), [])
 
     def test_only_direct_drops_connection(self):
+        # JDirect False AND the trip has a stop -> a direct-only alert drops it
+        r = native_row(JDirect=False)
+        r["AvailabilityTrips"] = [{"Cabin": "business", "MileageCost": 82000,
+                                   "TotalDuration": 700, "Connections": ["MNL"], "Stops": 1}]
         p = dict(PARAMS, only_direct=True)
-        self.assertEqual(check.filter_rows([native_row(JDirect=False)],
-                                           p, set(), CFG, "SFO"), [])
+        self.assertEqual(check.filter_rows([r], p, set(), CFG, "SFO"), [])
+
+    def test_only_direct_keeps_nonstop_trip_when_jdirect_unset(self):
+        # JDirect unset but the trip is Stops==0 -> a direct-only alert KEEPS it
+        r = native_row(JDirect=False)
+        r["AvailabilityTrips"] = [{"Cabin": "business", "MileageCost": 82000,
+                                   "TotalDuration": 700, "Connections": [], "Stops": 0}]
+        p = dict(PARAMS, only_direct=True)
+        self.assertEqual(len(check.filter_rows([r], p, set(), CFG, "SFO")), 1)
+
+    def test_economy_cabin_reads_Y_fields(self):
+        row = {"YAvailable": True, "YMileageCost": 40000, "YRemainingSeats": 4,
+               "YTotalTaxes": 100, "YDirect": True, "YAirlines": "UA",
+               "Route": {"OriginAirport": "SFO", "DestinationAirport": "NRT"},
+               "Date": "2026-11-20",
+               "AvailabilityTrips": [{"Cabin": "economy", "MileageCost": 40000,
+                                      "TotalDuration": 600, "Stops": 0}]}
+        hits = check.filter_rows([row], dict(PARAMS, cabin="economy"), set(), CFG, "SFO")
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["miles"], 40000)
+        self.assertEqual(hits[0]["cabin"], "economy")
+
+    def test_dateless_row_skipped(self):
+        r = native_row()
+        del r["Date"]
+        self.assertEqual(check.filter_rows([r], PARAMS, set(), CFG, "SFO"), [])
+
+    def test_null_trips_still_produces_hit(self):
+        hits = check.filter_rows([native_row(AvailabilityTrips=None)], PARAMS, set(), CFG, "SFO")
+        self.assertEqual(len(hits), 1)
+        self.assertIsNone(hits[0]["duration_min"])
+
+    def test_non_string_airlines_does_not_crash(self):
+        hits = check.filter_rows([native_row(JAirlines=["NH", "UA"])], PARAMS, set(), CFG, "SFO")
+        self.assertEqual(len(hits), 1)  # coerced to str, no AttributeError
 
 
-class TestBestBusinessTrip(unittest.TestCase):
+class TestBestTrip(unittest.TestCase):
     def test_prefers_cost_match_then_shortest(self):
         row = native_row(AvailabilityTrips=[
             {"Cabin": "business", "MileageCost": 82000, "TotalDuration": 800, "Connections": [], "Stops": 0},
             {"Cabin": "business", "MileageCost": 82000, "TotalDuration": 600, "Connections": [], "Stops": 0},
             {"Cabin": "economy", "MileageCost": 40000, "TotalDuration": 500},
         ])
-        dur, conns, stops = check.best_business_trip(row, 82000)
+        dur, conns, stops = check.best_trip(row, 82000, "business")
         self.assertEqual(dur, 600)
         self.assertEqual(stops, 0)
 
-    def test_no_business_trip(self):
-        self.assertEqual(check.best_business_trip({"AvailabilityTrips": []}, 1),
+    def test_no_cost_match_falls_back_to_shortest(self):
+        row = native_row(AvailabilityTrips=[
+            {"Cabin": "business", "MileageCost": 82000, "TotalDuration": 800, "Stops": 1},
+            {"Cabin": "business", "MileageCost": 85000, "TotalDuration": 600, "Stops": 0},
+        ])
+        dur, _, _ = check.best_trip(row, 999999, "business")  # no exact match
+        self.assertEqual(dur, 600)
+
+    def test_string_duration_does_not_crash(self):
+        row = native_row(AvailabilityTrips=[
+            {"Cabin": "business", "MileageCost": 82000, "TotalDuration": "oops", "Stops": 0},
+            {"Cabin": "business", "MileageCost": 82000, "TotalDuration": 600, "Stops": 0},
+        ])
+        dur, _, _ = check.best_trip(row, 82000, "business")
+        self.assertEqual(dur, 600)  # non-numeric sorted last, no TypeError
+
+    def test_no_matching_cabin(self):
+        self.assertEqual(check.best_trip({"AvailabilityTrips": []}, 1, "business"),
                          (None, [], None))
 
 
@@ -96,8 +151,10 @@ class TestResolveAndId(unittest.TestCase):
              "max_miles": 90000, "start_date": "2026-11-01", "end_date": "2026-11-30"}
         a_reordered = dict(a, destinations=["HND", "NRT"])  # order-insensitive
         self.assertEqual(check.content_id(a), check.content_id(a_reordered))
-        b = dict(a, max_miles=80000)
-        self.assertNotEqual(check.content_id(a), check.content_id(b))
+        # every identity field must distinguish otherwise-identical alerts
+        self.assertNotEqual(check.content_id(a), check.content_id(dict(a, max_miles=80000)))
+        self.assertNotEqual(check.content_id(a), check.content_id(dict(a, min_seats=4)))
+        self.assertNotEqual(check.content_id(a), check.content_id(dict(a, only_direct=True)))
 
 
 class TestDedupe(unittest.TestCase):
@@ -111,10 +168,22 @@ class TestDedupe(unittest.TestCase):
         state = {}
         new, state = check.dedupe([self._hit()], state, "2026-07-18")
         self.assertEqual(len(new), 1)
+        k = check.hit_key(self._hit())
+        self.assertEqual(state[k], {"miles": 82000, "seats": 2,
+                                    "last_seen": "2026-07-18", "date": "2026-11-20"})
         new, state = check.dedupe([self._hit()], state, "2026-07-18")
         self.assertEqual(new, [])  # already seen
         new, state = check.dedupe([self._hit(miles=75000)], state, "2026-07-18")
         self.assertEqual(len(new), 1)  # cheaper -> new
+
+    def test_tracks_floor_not_last_price(self):
+        state = {}
+        _, state = check.dedupe([self._hit(miles=82000)], state, "2026-07-18")
+        _, state = check.dedupe([self._hit(miles=75000)], state, "2026-07-18")  # dips
+        # price rises to 80000 — must NOT re-alert (still above the 75000 floor)
+        new, state = check.dedupe([self._hit(miles=80000)], state, "2026-07-18")
+        self.assertEqual(new, [])
+        self.assertEqual(state[check.hit_key(self._hit())]["miles"], 75000)  # floor kept
 
     def test_per_alert_independence(self):
         state = {}
@@ -163,6 +232,78 @@ class TestAtomicWrite(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o600)
         with open(p) as f:
             self.assertEqual(f.read(), "{}")
+
+
+class TestLoadState(unittest.TestCase):
+    def test_corrupt_state_resets_and_sets_aside(self):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "state.json")
+        with open(p, "w") as f:
+            f.write("{not valid json")
+        self.assertEqual(check.load_state(p), {})           # degrades to empty
+        self.assertTrue(os.path.exists(p + ".corrupt"))     # visible, not silent
+
+    def test_missing_state_is_empty(self):
+        self.assertEqual(check.load_state("/no/such/state.json"), {})
+
+
+class TestMainIntegration(unittest.TestCase):
+    PATHS = ("CONFIG_PATH", "ALERTS_PATH", "STATE_PATH", "NEW_HITS_PATH", "POLL_HOST_PATH")
+
+    def setUp(self):
+        import seats_aero
+        self.seats = seats_aero
+        self._orig_search = seats_aero.search
+        self._saved = {a: getattr(check, a) for a in self.PATHS}
+        self.dir = tempfile.mkdtemp()
+        check.CONFIG_PATH = os.path.join(self.dir, "config.json")
+        check.ALERTS_PATH = os.path.join(self.dir, "alerts.json")
+        check.STATE_PATH = os.path.join(self.dir, "state.json")
+        check.NEW_HITS_PATH = os.path.join(self.dir, "new_hits.json")
+        check.POLL_HOST_PATH = os.path.join(self.dir, ".poll-host")  # absent -> allowed
+        with open(check.CONFIG_PATH, "w") as f:
+            json.dump({"api_key_env": "AWARD_TEST_KEY_MAIN",
+                       "defaults": {"cabin": "business", "max_miles": 90000, "min_seats": 1},
+                       "seats_aero_url_template": "https://seats.aero/x?o={origin}&d={dest}"}, f)
+        with open(check.ALERTS_PATH, "w") as f:
+            json.dump({"alerts": [{"id": "a1", "name": "SFO-NRT", "origins": ["SFO"],
+                                   "destinations": ["NRT"], "enabled": True}]}, f)
+        os.environ["AWARD_TEST_KEY_MAIN"] = "k"
+
+    def tearDown(self):
+        self.seats.search = self._orig_search
+        for a, v in self._saved.items():
+            setattr(check, a, v)
+        os.environ.pop("AWARD_TEST_KEY_MAIN", None)
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _run_main(self):
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            check.main()
+        return buf.getvalue()
+
+    def test_happy_path_writes_new_hits(self):
+        self.seats.search = lambda *a, **k: [native_row()]
+        out = self._run_main()
+        self.assertIn("NEW_HITS: 1", out)
+        with open(check.NEW_HITS_PATH) as f:
+            hits = json.load(f)
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["alert_name"], "SFO-NRT")
+        self.assertEqual(hits[0]["alert_id"], "a1")
+
+    def test_auth_error_is_fatal(self):
+        self.seats.search = lambda *a, **k: (_ for _ in ()).throw(self.seats.AuthError("bad"))
+        with self.assertRaises(SystemExit):
+            self._run_main()
+
+    def test_search_error_skips_leg_and_run_completes(self):
+        self.seats.search = lambda *a, **k: (_ for _ in ()).throw(self.seats.SearchError("timeout"))
+        out = self._run_main()
+        self.assertIn("NEW_HITS: 0", out)
 
 
 if __name__ == "__main__":

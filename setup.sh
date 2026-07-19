@@ -26,13 +26,16 @@ if [ ! -f "$DIR/.env" ]; then
 fi
 chmod 600 "$DIR/.env" || true
 
-# 3. designate this host as the poller
-hostname > "$DIR/.poll-host"
+# 3. designate this host as the poller (write via Python so it matches the guard's
+#    socket.gethostname(), not the shell `hostname` which can differ short-vs-FQDN)
+python3 -c 'import socket; print(socket.gethostname())' > "$DIR/.poll-host"
 echo "recorded poll host: $(cat "$DIR/.poll-host")"
 
-# 4. install the launchd agent (substitute repo dir; the plist carries no secrets)
-mkdir -p "$HOME/Library/LaunchAgents"
-sed "s|__REPO_DIR__|$DIR|g" "$PLIST_SRC" > "$PLIST_DST"
+# 4. install the launchd agent (substitute repo dir + log path; plist carries no secrets).
+#    Logs go OUTSIDE the repo so personal route/hit data never lands in the checkout.
+mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+LOG_PATH="$HOME/Library/Logs/award-alert-agent.log"
+sed -e "s|__REPO_DIR__|$DIR|g" -e "s|__LOG_PATH__|$LOG_PATH|g" "$PLIST_SRC" > "$PLIST_DST"
 launchctl unload "$PLIST_DST" 2>/dev/null || true
 launchctl load "$PLIST_DST"
 echo "installed + loaded $LABEL (polls every 10 min)"

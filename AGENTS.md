@@ -24,8 +24,9 @@ JSON data only — never interpreted as shell or git.
 
 - `alerts.json` — the alert list. **Agents edit it only through `manage.py`, never by hand.**
 - `new_hits.json` — written by `check.py` each poll; the seam an agent reads to notify its own way.
-  Each hit: `{alert_id, alert_name, origin, dest, date, airlines, program, miles, seats, direct,
-  duration_min, connections, stops, link}`.
+  Each hit (authoritative shape is the dict built in `check.filter_rows`):
+  `{alert_id, alert_name, origin, dest, date, cabin, region, airlines, program, miles, seats,
+  direct, duration_min, connections, stops, taxes_cents, link}`.
 
 ## Invariants (do not violate)
 

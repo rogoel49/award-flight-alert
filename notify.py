@@ -13,6 +13,7 @@ Usage:
     notify.py            # send if new_hits.json is non-empty
     notify.py --test     # send a one-row test email to verify the SMTP path
 """
+import html
 import json
 import os
 import smtplib
@@ -20,6 +21,7 @@ import sys
 from email.message import EmailMessage
 
 import check
+from check import fmt_duration, fmt_note  # single source of truth for formatting
 
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465
@@ -32,42 +34,35 @@ def load_notify_cfg():
 def load_hits():
     if not os.path.isfile(check.NEW_HITS_PATH):
         return []
-    with open(check.NEW_HITS_PATH) as f:
-        return json.load(f)
+    try:
+        with open(check.NEW_HITS_PATH) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
 
 
 def route_cell(h):
-    label = f"{h.get('origin', '?')}&rarr;{h.get('dest', '?')}"
-    link = h.get("link")
-    return f'<a href="{link}">{label}</a>' if link else label
-
-
-def fmt_duration(minutes):
-    if not minutes:
-        return "?"
-    hh, mm = divmod(int(minutes), 60)
-    return f"{hh}h {mm:02d}m"
-
-
-def fmt_note(h):
-    if h.get("direct"):
-        return "Nonstop"
-    conns = h.get("connections") or []
-    if conns:
-        return "via " + " / ".join(conns)
-    stops = h.get("stops")
-    return f"{stops} stop" + ("s" if (stops or 0) != 1 else "") if stops else "1+ stop"
+    # Escape everything: origin/dest come from the API; a value must never break
+    # out of the HTML. Only render a clickable anchor for https links.
+    label = html.escape(f"{h.get('origin', '?')}→{h.get('dest', '?')}")
+    link = h.get("link") or ""
+    if link.startswith("https://"):
+        return f'<a href="{html.escape(link, quote=True)}">{label}</a>'
+    return label
 
 
 def build_html(hits):
+    # alert_name is free-form and airline/program come from the API — escape all of
+    # them so a hostile value can't inject markup into an email you trust.
     rows = "\n".join(
-        f"<tr><td>{h.get('alert_name', '')}</td><td>{route_cell(h)}</td>"
-        f"<td>{h.get('date', '')}</td><td>{h.get('airlines', '')}</td>"
-        f"<td>{h.get('program', '')}</td>"
+        f"<tr><td>{html.escape(str(h.get('alert_name', '')))}</td><td>{route_cell(h)}</td>"
+        f"<td>{html.escape(str(h.get('date', '')))}</td>"
+        f"<td>{html.escape(str(h.get('airlines', '')))}</td>"
+        f"<td>{html.escape(str(h.get('program', '')))}</td>"
         f"<td align=\"right\">{h.get('miles', 0):,}</td>"
-        f"<td align=\"right\">{h.get('seats', '?')}</td>"
-        f"<td align=\"right\">{fmt_duration(h.get('duration_min'))}</td>"
-        f"<td>{fmt_note(h)}</td></tr>"
+        f"<td align=\"right\">{html.escape(str(h.get('seats', '?')))}</td>"
+        f"<td align=\"right\">{html.escape(fmt_duration(h.get('duration_min')))}</td>"
+        f"<td>{html.escape(fmt_note(h))}</td></tr>"
         for h in hits
     )
     return (
@@ -117,20 +112,20 @@ def notify(hits, notify_cfg, test=False):
         print(f"notify: {pw_env} not set; skipping email (hits are in new_hits.json).",
               file=sys.stderr)
         return False
-    if test:
-        subject = "✈️ Award alert test (SMTP path)"
-        html = build_html([{"alert_name": "test", "origin": "SFO", "dest": "TST",
-                            "date": "2026-01-01", "airlines": "ZZ", "program": "test",
-                            "miles": 1, "seats": 1, "direct": True}])
-    else:
-        cheapest = min(h["miles"] for h in hits)
-        subject = f"✈️ Award alert: {len(hits)} new seat(s) from {cheapest:,} mi"
-        html = build_html(hits)
     try:
-        send(subject, html, notify_cfg, password)
+        if test:
+            subject = "✈️ Award alert test (SMTP path)"
+            html_body = build_html([{"alert_name": "test", "origin": "SFO", "dest": "TST",
+                                     "date": "2026-01-01", "airlines": "ZZ", "program": "test",
+                                     "miles": 1, "seats": 1, "direct": True}])
+        else:
+            cheapest = min((h.get("miles", 0) for h in hits), default=0)
+            subject = f"✈️ Award alert: {len(hits)} new seat(s) from {cheapest:,} mi"
+            html_body = build_html(hits)
+        send(subject, html_body, notify_cfg, password)
         print(f"notify: email sent to {to}.")
         return True
-    except Exception as e:  # best-effort — a send failure must never fail the run
+    except Exception as e:  # best-effort — a send/format failure must never fail the run
         print(f"notify: SMTP send failed ({e}); hits are in new_hits.json.", file=sys.stderr)
         return False
 

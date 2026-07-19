@@ -19,8 +19,10 @@ import urllib.request
 
 DEFAULT_BASE_URL = "https://seats.aero/partnerapi"
 _AUTH_STATUSES = (401, 403)
-# Row-level fields the API returns as JSON strings; coerce to int for comparisons.
-_INT_FIELDS = ("JMileageCost", "JRemainingSeats", "JTotalTaxes")
+# Row-level fields the API may return as JSON strings; coerce to int for comparisons.
+# Covered for every cabin prefix (Y=economy, W=premium, J=business, F=first).
+_INT_FIELDS = tuple(f"{p}{s}" for p in ("Y", "W", "J", "F")
+                    for s in ("MileageCost", "RemainingSeats", "TotalTaxes"))
 
 
 class SearchError(Exception):
@@ -57,7 +59,7 @@ def build_search_url(base_url, origin, dest, cabin, start_date, end_date, take=5
 
 
 def search(base_url, api_key, origin, dest, cabin, start_date, end_date,
-           take=500, timeout=60, rate_limit_sleep=0.4, max_retries=2,
+           take=500, timeout=30, rate_limit_sleep=0.4, max_retries=2,
            _urlopen=None):
     """Query one origin->dest leg. Returns a list of native-shaped rows.
 
