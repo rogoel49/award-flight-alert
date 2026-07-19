@@ -1,0 +1,19 @@
+{
+  "base_url": "https://seats.aero/partnerapi",
+  "api_key_env": "SEATS_AERO_API_KEY",
+  "defaults": {
+    "cabin": "business",
+    "max_miles": 90000,
+    "min_seats": 1,
+    "only_direct": false,
+    "rolling_days": 90,
+    "respect_exclusions": true
+  },
+  "excluded_airlines": [],
+  "seats_aero_url_template": "https://seats.aero/search?origins={origin}&destinations={dest}&startDate={date}&endDate={date}",
+  "notify": {
+    "smtp_user": "you@example.com",
+    "email_to": "you@example.com",
+    "smtp_password_env": "AWARD_SMTP_PASSWORD"
+  }
+}
