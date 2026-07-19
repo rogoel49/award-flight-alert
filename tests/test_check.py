@@ -1,3 +1,6 @@
+import os
+import stat
+import tempfile
 import unittest
 
 import check
@@ -124,6 +127,16 @@ class TestDedupe(unittest.TestCase):
         state = {}
         _, state = check.dedupe([self._hit(date="2020-01-01")], state, "2026-07-18")
         self.assertEqual(state, {})  # travel date in the past -> pruned
+
+
+class TestAtomicWrite(unittest.TestCase):
+    def test_written_0600(self):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "state.json")
+        check._atomic_write(p, "{}")
+        self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o600)
+        with open(p) as f:
+            self.assertEqual(f.read(), "{}")
 
 
 if __name__ == "__main__":
