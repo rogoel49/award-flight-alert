@@ -129,6 +129,32 @@ class TestDedupe(unittest.TestCase):
         self.assertEqual(state, {})  # travel date in the past -> pruned
 
 
+class TestPollHostGuard(unittest.TestCase):
+    def setUp(self):
+        self.orig = check.POLL_HOST_PATH
+        self.d = tempfile.mkdtemp()
+        check.POLL_HOST_PATH = os.path.join(self.d, ".poll-host")
+
+    def tearDown(self):
+        check.POLL_HOST_PATH = self.orig
+
+    def _write(self, host):
+        with open(check.POLL_HOST_PATH, "w") as f:
+            f.write(host)
+
+    def test_missing_marker_allows(self):
+        self.assertTrue(check.is_designated_poller())
+
+    def test_matching_host_allows(self):
+        import socket
+        self._write(socket.gethostname())
+        self.assertTrue(check.is_designated_poller())
+
+    def test_other_host_blocks(self):
+        self._write("some-other-host-that-is-not-this-one")
+        self.assertFalse(check.is_designated_poller())
+
+
 class TestAtomicWrite(unittest.TestCase):
     def test_written_0600(self):
         d = tempfile.mkdtemp()

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent TEMPLATE. setup.sh substitutes __REPO_DIR__ and installs a copy at
+  ~/Library/LaunchAgents/. This template carries NO secrets — run.sh sources them
+  from the gitignored .env at runtime.
+
+  Cadence: StartInterval is in seconds. 600 = every 10 minutes. Change that one
+  integer to tune (e.g. 3600 for hourly).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.awardalertagent.poll</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__REPO_DIR__/run.sh</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>600</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>__REPO_DIR__/poll.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO_DIR__/poll.log</string>
+</dict>
+</plist>
