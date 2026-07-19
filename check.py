@@ -27,11 +27,13 @@ from datetime import date, timedelta
 import seats_aero
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(HERE, "config.json")
-ALERTS_PATH = os.path.join(HERE, "alerts.json")
-STATE_PATH = os.path.join(HERE, "state.json")
-NEW_HITS_PATH = os.path.join(HERE, "new_hits.json")
-POLL_HOST_PATH = os.path.join(HERE, ".poll-host")
+# Paths default to files next to the code but can be overridden via env — useful
+# for tests and for relocating the local data directory.
+CONFIG_PATH = os.environ.get("AWARD_CONFIG", os.path.join(HERE, "config.json"))
+ALERTS_PATH = os.environ.get("AWARD_ALERTS", os.path.join(HERE, "alerts.json"))
+STATE_PATH = os.environ.get("AWARD_STATE", os.path.join(HERE, "state.json"))
+NEW_HITS_PATH = os.environ.get("AWARD_NEW_HITS", os.path.join(HERE, "new_hits.json"))
+POLL_HOST_PATH = os.environ.get("AWARD_POLL_HOST", os.path.join(HERE, ".poll-host"))
 
 
 # --------------------------------------------------------------------------- #

@@ -6,6 +6,7 @@ alerts.json
 state.json
 new_hits.json
 .poll-host
+*.lock
 
 # Python
 __pycache__/
