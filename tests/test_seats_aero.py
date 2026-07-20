@@ -63,6 +63,9 @@ class TestSearch(unittest.TestCase):
         self.assertIn("include_trips=true", req.full_url)
         self.assertIn("origin_airport=SFO", req.full_url)
         self.assertEqual(req.get_header("Partner-authorization"), "SECRET")
+        # Cloudflare-bypass headers must be present (error 1010 otherwise)
+        self.assertEqual(req.get_header("User-agent"), seats_aero.USER_AGENT)
+        self.assertEqual(req.get_header("Accept"), "application/json")
 
     def test_401_raises_auth_error(self):
         err = urllib.error.HTTPError("u", 401, "Unauthorized", None, None)

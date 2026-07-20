@@ -18,6 +18,9 @@ import urllib.parse
 import urllib.request
 
 DEFAULT_BASE_URL = "https://seats.aero/partnerapi"
+# Seats.aero is fronted by Cloudflare, which rejects the default Python urllib
+# User-Agent ("Python-urllib/x.y") with HTTP 403 / error 1010. Send an explicit one.
+USER_AGENT = "award-flight-alert/1.0 (+https://github.com/haiguan28/award-flight-alert)"
 _AUTH_STATUSES = (401, 403)
 # Row-level fields the API may return as JSON strings; coerce to int for comparisons.
 # Covered for every cabin prefix (Y=economy, W=premium, J=business, F=first).
@@ -70,7 +73,11 @@ def search(base_url, api_key, origin, dest, cabin, start_date, end_date,
     """
     urlopen = _urlopen or urllib.request.urlopen
     url = build_search_url(base_url, origin, dest, cabin, start_date, end_date, take)
-    req = urllib.request.Request(url, headers={"Partner-Authorization": api_key})
+    req = urllib.request.Request(url, headers={
+        "Partner-Authorization": api_key,
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,  # required — Cloudflare blocks the default urllib UA
+    })
 
     last_err = None
     for attempt in range(max_retries + 1):
