@@ -72,6 +72,9 @@ python3 manage.py add --name "SFO-Tokyo Nov" --from SFO --to NRT,HND,KIX \
   --cabin business --max-miles 90000 --min-seats 2 --start 2026-11-01 --end 2026-11-30
 ```
 
+`--cabin` takes `economy`, `premium`, `business`, `first`, or `any` (every cabin under one cap, for a
+single API call per leg). A round trip is two alerts — one per direction.
+
 See [`AGENTS.md`](AGENTS.md) for wiring this into OpenClaw / Hermes.
 
 ## Requirements

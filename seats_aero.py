@@ -54,10 +54,11 @@ def build_search_url(base_url, origin, dest, cabin, start_date, end_date, take=5
         "destination_airport": dest,
         "start_date": start_date,
         "end_date": end_date,
-        "cabin": cabin,
         "include_trips": "true",
         "take": str(take),
     }
+    if cabin:  # omitted -> rows for every cabin (each row carries all Y/W/J/F fields)
+        params["cabin"] = cabin
     return base_url.rstrip("/") + "/search?" + urllib.parse.urlencode(params)
 
 

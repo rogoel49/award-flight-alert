@@ -67,6 +67,12 @@ class TestSearch(unittest.TestCase):
         self.assertEqual(req.get_header("User-agent"), seats_aero.USER_AGENT)
         self.assertEqual(req.get_header("Accept"), "application/json")
 
+    def test_cabin_is_omitted_from_url_when_none(self):
+        self.assertIn("cabin=business", seats_aero.build_search_url(
+            "https://x/partnerapi", "SFO", "NRT", "business", "2026-11-01", "2026-11-30"))
+        self.assertNotIn("cabin", seats_aero.build_search_url(
+            "https://x/partnerapi", "SFO", "NRT", None, "2026-11-01", "2026-11-30"))
+
     def test_401_raises_auth_error(self):
         err = urllib.error.HTTPError("u", 401, "Unauthorized", None, None)
         with self.assertRaises(seats_aero.AuthError):

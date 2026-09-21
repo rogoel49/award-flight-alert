@@ -65,6 +65,12 @@ class TestManage(unittest.TestCase):
         self.assertFalse(json.loads(r.stdout)["ok"])
         self.assertFalse(os.path.exists(self.alerts))
 
+    def test_any_cabin_accepted(self):
+        r = self.run_cli(["add", "--name", "x", "--from", "MEX", "--to", "SFO",
+                          "--cabin", "any"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.read()["alerts"][0]["cabin"], "any")
+
     def test_cabin_normalized_to_lowercase(self):
         r = self.run_cli(["add", "--name", "x", "--from", "SFO", "--to", "NRT",
                           "--cabin", "First"])

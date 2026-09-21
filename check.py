@@ -30,6 +30,9 @@ import seats_aero
 
 # Map an alert's cabin to the API field prefix and trip Cabin value.
 CABIN_PREFIX = {"economy": "Y", "premium": "W", "business": "J", "first": "F"}
+# Pseudo-cabin: watch every cabin under one cap, for the price of ONE API call per
+# leg (vs. four single-cabin alerts burning 4x the daily Partner API quota).
+ANY_CABIN = "any"
 
 
 def cabin_prefix(cabin):
@@ -238,6 +241,25 @@ def filter_rows(rows, params, excluded, cfg, origin):
     return hits
 
 
+def alert_cabins(params):
+    """The concrete cabins an alert watches: all of them for ``any``, else its one."""
+    return list(CABIN_PREFIX) if params["cabin"] == ANY_CABIN else [params["cabin"]]
+
+
+def api_cabin(params):
+    """The cabin filter to send to the API — none for ``any`` (one call, all cabins)."""
+    return None if params["cabin"] == ANY_CABIN else params["cabin"]
+
+
+def filter_alert_rows(rows, params, excluded, cfg, origin):
+    """filter_rows across every cabin the alert watches. A row can yield one hit per
+    cabin (economy AND business open on the same date are separate hits)."""
+    hits = []
+    for cabin in alert_cabins(params):
+        hits.extend(filter_rows(rows, dict(params, cabin=cabin), excluded, cfg, origin))
+    return hits
+
+
 # --------------------------------------------------------------------------- #
 # formatting + dedupe key
 # --------------------------------------------------------------------------- #
@@ -259,8 +281,10 @@ def fmt_note(h):
 
 
 def hit_key(h):
+    # cabin is part of the key: an any-cabin alert yields several hits per row, and
+    # a cheap economy seat must not mask (dedupe away) a business seat on the same date.
     return (f"{h['alert_id']}|{h.get('origin','')}|{h['dest']}|{h['date']}|"
-            f"{h['airlines']}|{h.get('program','')}")
+            f"{h['airlines']}|{h.get('program','')}|{h.get('cabin','')}")
 
 
 def dedupe(all_hits, state, today_iso):
@@ -341,14 +365,14 @@ def main():
             for dest in alert.get("destinations", []):
                 try:
                     rows = seats_aero.search(cfg["base_url"], api_key, origin, dest,
-                                             params["cabin"], start, end)
+                                             api_cabin(params), start, end)
                 except seats_aero.AuthError as e:
                     sys.exit(f"ERROR: {e}")
                 except seats_aero.SearchError as e:
                     print(f"  ! {origin}-{dest}: {e}", file=sys.stderr)
                     continue
                 try:
-                    hits = filter_rows(rows, params, excluded, cfg, origin)
+                    hits = filter_alert_rows(rows, params, excluded, cfg, origin)
                 except Exception as e:  # a malformed row must not kill the whole poll
                     print(f"  ! {origin}-{dest}: filter error: {e}", file=sys.stderr)
                     continue

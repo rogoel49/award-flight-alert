@@ -107,6 +107,37 @@ class TestFilterRows(unittest.TestCase):
         self.assertEqual(len(hits), 1)  # coerced to str, no AttributeError
 
 
+class TestAnyCabin(unittest.TestCase):
+    ROW = {"YAvailable": True, "YMileageCost": 17500, "YRemainingSeats": 9, "YAirlines": "UA",
+           "JAvailable": True, "JMileageCost": 35000, "JRemainingSeats": 2, "JAirlines": "AV",
+           "FAvailable": True, "FMileageCost": 120000, "FRemainingSeats": 1, "FAirlines": "AV",
+           "Source": "aeroplan", "Date": "2026-11-24",
+           "Route": {"OriginAirport": "MEX", "DestinationAirport": "SFO"}}
+
+    def test_one_row_yields_a_hit_per_open_cabin_under_cap(self):
+        p = dict(PARAMS, cabin="any", max_miles=60000)
+        hits = check.filter_alert_rows([self.ROW], p, set(), CFG, "MEX")
+        self.assertEqual({(h["cabin"], h["miles"]) for h in hits},
+                         {("economy", 17500), ("business", 35000)})  # first is over cap
+
+    def test_single_cabin_alert_is_unchanged(self):
+        hits = check.filter_alert_rows([self.ROW], PARAMS, set(), CFG, "MEX")
+        self.assertEqual([h["cabin"] for h in hits], ["business"])
+
+    def test_any_sends_no_cabin_filter_to_the_api(self):
+        self.assertIsNone(check.api_cabin({"cabin": "any"}))
+        self.assertEqual(check.api_cabin({"cabin": "first"}), "first")
+
+    def test_cabins_dedupe_independently(self):
+        p = dict(PARAMS, cabin="any", max_miles=60000)
+        hits = check.filter_alert_rows([self.ROW], p, set(), CFG, "MEX")
+        for h in hits:
+            h["alert_id"] = "a1"
+        self.assertEqual(len({check.hit_key(h) for h in hits}), 2)
+        new, _ = check.dedupe(hits, {}, "2026-09-21")
+        self.assertEqual(len(new), 2)  # cheap economy doesn't mask the business seat
+
+
 class TestBestTrip(unittest.TestCase):
     def test_prefers_cost_match_then_shortest(self):
         row = native_row(AvailabilityTrips=[

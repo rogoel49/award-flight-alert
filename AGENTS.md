@@ -17,7 +17,9 @@ alerts the same way. Adding a second agent is a wiring step, not a code change.
 
 Every command prints a single JSON object to **stdout** (`{"ok": true|false, ...}`), so the
 agent can parse the result and confirm it. On bad input it prints `{"ok": false, "error": "..."}`
-and exits non-zero, leaving the alert file **unchanged**. `--name` and all values are stored as
+and exits non-zero, leaving the alert file **unchanged**. `--cabin` is one of `economy`, `premium`,
+`business`, `first`, or `any` — `any` watches every cabin under the one `--max-miles` cap using a
+single API call per leg (prefer it over four single-cabin alerts, which cost 4x the API quota). `--name` and all values are stored as
 JSON data only — never interpreted as shell or git.
 
 ### Files

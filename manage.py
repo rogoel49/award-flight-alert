@@ -110,9 +110,9 @@ def cmd_add(args):
         # An unknown cabin would be sent to the API verbatim yet filtered as
         # business — the alert would silently never match. Reject it up front.
         args.cabin = args.cabin.strip().lower()
-        if args.cabin not in check.CABIN_PREFIX:
-            _fail(f"invalid cabin '{args.cabin}' "
-                  f"(expected one of: {', '.join(check.CABIN_PREFIX)})")
+        valid = [*check.CABIN_PREFIX, check.ANY_CABIN]
+        if args.cabin not in valid:
+            _fail(f"invalid cabin '{args.cabin}' (expected one of: {', '.join(valid)})")
     if args.max_miles is not None and args.max_miles <= 0:
         _fail("--max-miles must be positive")
     if args.min_seats is not None and args.min_seats < 1:
@@ -196,7 +196,7 @@ def build_parser():
     a.add_argument("--name", required=True)
     a.add_argument("--from", dest="origin", required=True, help="origin airport(s), comma-separated")
     a.add_argument("--to", dest="to", required=True, help="destination airport(s), comma-separated")
-    a.add_argument("--cabin", default=None, help="default: config default (business)")
+    a.add_argument("--cabin", default=None, help="economy|premium|business|first|any (default: config default)")
     a.add_argument("--max-miles", dest="max_miles", type=int, default=None)
     a.add_argument("--min-seats", dest="min_seats", type=int, default=None)
     a.add_argument("--only-direct", dest="only_direct", action="store_true")
