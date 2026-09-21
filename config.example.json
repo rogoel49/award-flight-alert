@@ -12,6 +12,9 @@
   "excluded_airlines": [],
   "seats_aero_url_template": "https://seats.aero/search?origins={origin}&destinations={dest}&startDate={date}&endDate={date}",
   "notify": {
+    "channels": [
+      "email"
+    ],
     "smtp_user": "you@example.com",
     "email_to": "you@example.com",
     "smtp_password_env": "AWARD_SMTP_PASSWORD"

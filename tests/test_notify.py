@@ -66,6 +66,73 @@ class TestNotify(unittest.TestCase):
         self.assertFalse(notify.notify([{"miles": 1}], {"email_to": ""}))
 
 
+HIT = {"alert_name": "SFO-Tokyo", "origin": "SFO", "dest": "NRT", "date": "2026-11-20",
+       "cabin": "business", "airlines": "NH", "program": "aeroplan", "miles": 82000,
+       "seats": 2, "direct": True, "duration_min": 675}
+
+
+class TestMacos(unittest.TestCase):
+    def fake_run(self, calls, fail=False):
+        def run(cmd, **kw):
+            calls.append(cmd)
+            if fail:
+                raise OSError("no osascript")
+        return run
+
+    def test_banner_text(self):
+        title, subtitle, message = notify.macos_banner(HIT)
+        self.assertIn("SFO→NRT", title)
+        self.assertIn("82,000 mi business", title)
+        self.assertEqual(subtitle, "2026-11-20 · NH via aeroplan")
+        self.assertEqual(message, "2 seats · Nonstop · 11h15m")
+
+    def test_values_go_through_argv_not_the_script(self):
+        calls = []
+        evil = dict(HIT, airlines='" & (do shell script "rm -rf ~") & "')
+        self.assertTrue(notify.notify_macos([evil], {}, _run=self.fake_run(calls)))
+        cmd = calls[0]
+        self.assertEqual(cmd[:2], ["osascript", "-e"])
+        self.assertNotIn("do shell script", cmd[2])      # the script itself is constant
+        self.assertTrue(any("do shell script" in a for a in cmd[3:]))  # data rides in argv
+
+    def test_caps_banners_and_adds_summary(self):
+        calls = []
+        notify.notify_macos([HIT] * 8, {"macos_max_banners": 3}, _run=self.fake_run(calls))
+        self.assertEqual(len(calls), 4)                  # 3 hits + 1 summary
+        self.assertIn("+5 more new seat(s)", calls[-1])
+
+    def test_failure_is_caught(self):
+        calls = []
+        self.assertFalse(notify.notify_macos([HIT], {}, _run=self.fake_run(calls, fail=True)))
+
+
+class TestChannels(unittest.TestCase):
+    def with_channels(self, record):
+        orig = dict(notify.CHANNELS)
+        notify.CHANNELS.update(
+            email=lambda hits, cfg, test=False: record.append("email") or True,
+            macos=lambda hits, cfg, test=False: record.append("macos") or True)
+        self.addCleanup(lambda: notify.CHANNELS.update(orig))
+
+    def test_default_channel_is_email(self):
+        rec = []
+        self.with_channels(rec)
+        self.assertTrue(notify.notify([HIT], {}))
+        self.assertEqual(rec, ["email"])
+
+    def test_macos_only_skips_email(self):
+        rec = []
+        self.with_channels(rec)
+        notify.notify([HIT], {"channels": ["macos"]})
+        self.assertEqual(rec, ["macos"])
+
+    def test_unknown_channel_is_skipped_not_fatal(self):
+        rec = []
+        self.with_channels(rec)
+        self.assertTrue(notify.notify([HIT], {"channels": ["pager", "macos"]}))
+        self.assertEqual(rec, ["macos"])
+
+
 class TestBuildHtml(unittest.TestCase):
     def test_renders_link_note_and_miles(self):
         html = notify.build_html([{

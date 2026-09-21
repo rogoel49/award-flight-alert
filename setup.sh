@@ -40,9 +40,10 @@ launchctl unload "$PLIST_DST" 2>/dev/null || true
 launchctl load "$PLIST_DST"
 echo "installed + loaded $LABEL (polls every 10 min)"
 
-# 5. show alerts, then a test email (needs AWARD_SMTP_PASSWORD in .env)
+# 5. show alerts, then a test notification through each configured notify.channels
+#    (the email channel needs AWARD_SMTP_PASSWORD in .env; macos needs nothing)
 python3 "$DIR/manage.py" list || true
-echo "sending a test email if AWARD_SMTP_PASSWORD is set..."
+echo "sending a test notification through your configured channels..."
 set -a; [ -f "$DIR/.env" ] && . "$DIR/.env"; set +a
 python3 "$DIR/notify.py" --test || true
 

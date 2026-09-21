@@ -20,13 +20,30 @@ Two planes that meet only at two JSON files:
   alert list (`alerts.json`).
 - **Data plane** — a `launchd` (or cron) timer runs `run.sh` → `check.py`: it queries the Seats.aero
   Partner API per alert, filters to award space under your mileage cap, dedupes against local state,
-  writes `new_hits.json`, and emails you new hits (or lets your agent notify you its own way).
+  writes `new_hits.json`, and notifies you of new hits (or lets your agent notify you its own way).
 
 ```
 you  ──talk──▶  agent  ──manage.py──▶  alerts.json
                                           │
-   launchd (every 10 min) ─▶ run.sh ─▶ check.py ─▶ new_hits.json ─▶ notify.py (email)
+   launchd (every 10 min) ─▶ run.sh ─▶ check.py ─▶ new_hits.json ─▶ notify.py (email / macOS)
 ```
+
+## Notification channels
+
+Set `notify.channels` in `config.json` to any combination of:
+
+| Channel | What you get | Needs |
+|---|---|---|
+| `email` (default) | One HTML summary email per poll with new hits | `notify.email_to` + a Gmail app password in `.env` |
+| `macos` | A Notification Center banner per new seat (capped at `notify.macos_max_banners`, default 5, then a "+N more" summary) | Nothing — but the poll host must be the Mac you're sitting at |
+
+```json
+"notify": { "channels": ["macos"] }
+```
+
+`python3 notify.py --test` sends a test through every configured channel. Banners are posted by
+`osascript`, so macOS files them under **Script Editor** in System Settings → Notifications — allow
+that app (and check Focus / Do Not Disturb) if nothing appears.
 
 ## Privacy & what's committed
 
@@ -42,7 +59,7 @@ and dedupe state are gitignored and live only on your machine:
 
 ```bash
 git clone <this repo> && cd award-alert-agent
-cp config.example.json config.json     # set your notify.email_to + defaults
+cp config.example.json config.json     # set notify.channels (+ notify.email_to for email) + defaults
 cp alerts.example.json alerts.json      # starts effectively empty; your agent fills it
 cp .env.example .env && chmod 600 .env  # add SEATS_AERO_API_KEY (+ AWARD_SMTP_PASSWORD for email)
 bash setup.sh                            # records this host as the poller, installs the timer, sends a test

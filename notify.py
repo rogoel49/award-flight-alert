@@ -1,22 +1,29 @@
 #!/usr/bin/env python3
 """
-Email new award hits via SMTP (a Gmail app password).
+Deliver new award hits through the channels in ``config.json -> notify.channels``.
 
-Reads ``new_hits.json`` (written by ``check.py``) and sends an HTML summary to
-``config.json -> notify.email_to`` using ``smtplib`` over SSL. No-op (exit 0, no
-email) when there are no new hits, so it is safe to chain after ``check.py`` on
-every run. Best-effort: a missing password or an SMTP error prints to stderr and
-never fails the run — the hits are always in ``new_hits.json`` regardless, which is
-also the seam an agent can read to notify you its own way.
+Reads ``new_hits.json`` (written by ``check.py``) and fans out to each channel:
+
+- ``email`` (the default, for backward compatibility) — an HTML summary to
+  ``notify.email_to`` via ``smtplib`` over SSL (a Gmail app password).
+- ``macos`` — native Notification Center banners via ``osascript``. No account, no
+  password; only useful when the poll host is the Mac you're sitting at.
+
+No-op (exit 0) when there are no new hits, so it is safe to chain after
+``check.py`` on every run. Best-effort: a misconfigured or failing channel prints
+to stderr and never fails the run or blocks the other channels — the hits are
+always in ``new_hits.json`` regardless, which is also the seam an agent can read
+to notify you its own way.
 
 Usage:
-    notify.py            # send if new_hits.json is non-empty
-    notify.py --test     # send a one-row test email to verify the SMTP path
+    notify.py            # deliver if new_hits.json is non-empty
+    notify.py --test     # send one test notification through every channel
 """
 import html
 import json
 import os
 import smtplib
+import subprocess
 import sys
 from email.message import EmailMessage
 
@@ -25,6 +32,21 @@ from check import fmt_duration, fmt_note  # single source of truth for formattin
 
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465
+DEFAULT_CHANNELS = ("email",)
+# Cap per-hit banners so a wide alert opening up can't flood Notification Center;
+# the remainder is rolled into one summary banner.
+MACOS_MAX_BANNERS = 5
+# The strings are passed as argv, never spliced into the script — an alert name or
+# API value can't break out into AppleScript.
+_OSASCRIPT = (
+    "on run argv\n"
+    "display notification (item 1 of argv) with title (item 2 of argv) "
+    "subtitle (item 3 of argv) sound name \"Glass\"\n"
+    "end run"
+)
+TEST_HIT = {"alert_name": "test", "origin": "SFO", "dest": "TST", "date": "2026-01-01",
+            "cabin": "business", "airlines": "ZZ", "program": "test", "miles": 1,
+            "seats": 1, "direct": True}
 
 
 def load_notify_cfg():
@@ -100,7 +122,7 @@ def send(subject, html, notify_cfg, password, smtp_factory=None):
         smtp.send_message(msg)
 
 
-def notify(hits, notify_cfg, test=False):
+def notify_email(hits, notify_cfg, test=False):
     """Best-effort email. Never raises. Returns True iff an email was sent."""
     to = notify_cfg.get("email_to")
     pw_env = notify_cfg.get("smtp_password_env", "AWARD_SMTP_PASSWORD")
@@ -115,9 +137,7 @@ def notify(hits, notify_cfg, test=False):
     try:
         if test:
             subject = "✈️ Award alert test (SMTP path)"
-            html_body = build_html([{"alert_name": "test", "origin": "SFO", "dest": "TST",
-                                     "date": "2026-01-01", "airlines": "ZZ", "program": "test",
-                                     "miles": 1, "seats": 1, "direct": True}])
+            html_body = build_html([TEST_HIT])
         else:
             cheapest = min((h.get("miles", 0) for h in hits), default=0)
             subject = f"✈️ Award alert: {len(hits)} new seat(s) from {cheapest:,} mi"
@@ -128,6 +148,67 @@ def notify(hits, notify_cfg, test=False):
     except Exception as e:  # best-effort — a send/format failure must never fail the run
         print(f"notify: SMTP send failed ({e}); hits are in new_hits.json.", file=sys.stderr)
         return False
+
+
+def macos_banner(h):
+    """(title, subtitle, message) for one hit."""
+    title = (f"\u2708\ufe0f {h.get('origin', '?')}\u2192{h.get('dest', '?')}  "
+             f"{h.get('miles', 0):,} mi {h.get('cabin', '')}").rstrip()
+    subtitle = f"{h.get('date', '?')} \u00b7 {h.get('airlines', '?')}"
+    if h.get("program"):
+        subtitle += f" via {h['program']}"
+    seats = h.get("seats", "?")
+    message = f"{seats} seat{'' if seats == 1 else 's'} \u00b7 {fmt_note(h)}"
+    if h.get("duration_min"):
+        message += f" \u00b7 {fmt_duration(h['duration_min'])}"
+    return title, subtitle, message
+
+
+def notify_macos(hits, notify_cfg, test=False, _run=None):
+    """Best-effort Notification Center banners. Never raises. Returns True iff at
+    least one banner was posted. ``_run`` is an injection seam for tests."""
+    run = _run or subprocess.run
+    if sys.platform != "darwin" and _run is None:
+        print("notify: macos channel needs macOS; skipping.", file=sys.stderr)
+        return False
+    hits = [TEST_HIT] if test else hits
+    limit = int(notify_cfg.get("macos_max_banners", MACOS_MAX_BANNERS))
+    # hits arrive sorted by (alert, miles), so the cap keeps the cheapest per alert
+    banners = [macos_banner(h) for h in hits[:limit]]
+    extra = len(hits) - len(banners)
+    if extra > 0:
+        banners.append(("\u2708\ufe0f Award alert", f"+{extra} more new seat(s)",
+                        "Full list is in new_hits.json"))
+    sent = 0
+    for title, subtitle, message in banners:
+        try:
+            run(["osascript", "-e", _OSASCRIPT, message, title, subtitle],
+                check=True, capture_output=True, timeout=15)
+            sent += 1
+        except Exception as e:  # best-effort — never fail the run
+            print(f"notify: macOS notification failed ({e}); hits are in new_hits.json.",
+                  file=sys.stderr)
+            break
+    if sent:
+        print(f"notify: posted {sent} macOS notification(s).")
+    return bool(sent)
+
+
+CHANNELS = {"email": notify_email, "macos": notify_macos}
+
+
+def notify(hits, notify_cfg, test=False):
+    """Fan out to every configured channel. Never raises. Returns True iff any
+    channel delivered. An unknown channel is reported and skipped."""
+    delivered = False
+    for name in notify_cfg.get("channels") or DEFAULT_CHANNELS:
+        fn = CHANNELS.get(name)
+        if fn is None:
+            print(f"notify: unknown channel '{name}' (expected one of: "
+                  f"{', '.join(CHANNELS)}); skipping.", file=sys.stderr)
+            continue
+        delivered = fn(hits, notify_cfg, test=test) or delivered
+    return delivered
 
 
 def main(argv=None):
