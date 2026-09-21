@@ -336,7 +336,7 @@ def main():
         start, end = alert_window(alert, defaults)
         print(f"[{name}] {','.join(alert.get('origins', []))} -> "
               f"{','.join(alert.get('destinations', []))}  {start}..{end} "
-              f"(business < {params['max_miles']:,})", file=sys.stderr)
+              f"({params['cabin']} < {params['max_miles']:,})", file=sys.stderr)
         for origin in alert.get("origins", []):
             for dest in alert.get("destinations", []):
                 try:

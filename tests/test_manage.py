@@ -58,6 +58,19 @@ class TestManage(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertFalse(json.loads(r.stdout)["ok"])
 
+    def test_bad_cabin_rejected(self):
+        r = self.run_cli(["add", "--name", "x", "--from", "SFO", "--to", "NRT",
+                          "--cabin", "busines"])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(json.loads(r.stdout)["ok"])
+        self.assertFalse(os.path.exists(self.alerts))
+
+    def test_cabin_normalized_to_lowercase(self):
+        r = self.run_cli(["add", "--name", "x", "--from", "SFO", "--to", "NRT",
+                          "--cabin", "First"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.read()["alerts"][0]["cabin"], "first")
+
     def test_injection_name_stored_as_data(self):
         evil = '"; rm -rf ~ #`whoami`$(id)'
         r = self.run_cli(["add", "--name", evil, "--from", "SFO", "--to", "NRT"])

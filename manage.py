@@ -106,6 +106,13 @@ def _resolved_view(alert):
 def cmd_add(args):
     origins = _parse_airports(args.origin, "--from")
     dests = _parse_airports(args.to, "--to")
+    if args.cabin is not None:
+        # An unknown cabin would be sent to the API verbatim yet filtered as
+        # business — the alert would silently never match. Reject it up front.
+        args.cabin = args.cabin.strip().lower()
+        if args.cabin not in check.CABIN_PREFIX:
+            _fail(f"invalid cabin '{args.cabin}' "
+                  f"(expected one of: {', '.join(check.CABIN_PREFIX)})")
     if args.max_miles is not None and args.max_miles <= 0:
         _fail("--max-miles must be positive")
     if args.min_seats is not None and args.min_seats < 1:
