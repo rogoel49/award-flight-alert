@@ -107,6 +107,51 @@ class TestFilterRows(unittest.TestCase):
         self.assertEqual(len(hits), 1)  # coerced to str, no AttributeError
 
 
+class TestUnknownSeatCount(unittest.TestCase):
+    def test_zero_seats_on_available_row_kept_for_one_seat_alert(self):
+        hits = check.filter_rows([native_row(JRemainingSeats=0)], PARAMS, set(), CFG, "SFO")
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(check.fmt_seats(hits[0]), "?")
+
+    def test_zero_seats_cannot_satisfy_a_two_seat_alert(self):
+        p = dict(PARAMS, min_seats=2)
+        self.assertEqual(check.filter_rows([native_row(JRemainingSeats=0)], p, set(), CFG, "SFO"), [])
+
+    def test_known_short_count_still_rejected(self):
+        p = dict(PARAMS, min_seats=2)
+        self.assertEqual(check.filter_rows([native_row(JRemainingSeats=1)], p, set(), CFG, "SFO"), [])
+
+
+class TestPendingOutbox(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "pending_hits.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _hit(self, date="2026-11-20", miles=82000):
+        return {"alert_id": "a1", "origin": "SFO", "dest": "NRT", "date": date,
+                "airlines": "NH", "program": "aeroplan", "cabin": "business", "miles": miles}
+
+    def test_queue_is_keyed_and_prunes_past_dates(self):
+        check.queue_pending([self._hit(), self._hit("2026-01-01")], "2026-07-18", self.path)
+        check.queue_pending([self._hit(miles=75000)], "2026-07-18", self.path)  # cheaper re-hit
+        pending = check.load_pending(self.path)
+        self.assertEqual([(h["date"], h["miles"]) for h in pending], [("2026-11-20", 75000)])
+
+    def test_ack_removes_only_what_was_delivered(self):
+        a, b = self._hit(), self._hit("2026-11-21")
+        check.queue_pending([a, b], "2026-07-18", self.path)
+        check.ack_pending([a], self.path)
+        self.assertEqual([h["date"] for h in check.load_pending(self.path)], ["2026-11-21"])
+
+    def test_corrupt_outbox_reads_as_empty(self):
+        with open(self.path, "w") as f:
+            f.write("{nope")
+        self.assertEqual(check.load_pending(self.path), [])
+
+
 class TestAnyCabin(unittest.TestCase):
     ROW = {"YAvailable": True, "YMileageCost": 17500, "YRemainingSeats": 9, "YAirlines": "UA",
            "JAvailable": True, "JMileageCost": 35000, "JRemainingSeats": 2, "JAirlines": "AV",
@@ -279,7 +324,8 @@ class TestLoadState(unittest.TestCase):
 
 
 class TestMainIntegration(unittest.TestCase):
-    PATHS = ("CONFIG_PATH", "ALERTS_PATH", "STATE_PATH", "NEW_HITS_PATH", "POLL_HOST_PATH")
+    PATHS = ("CONFIG_PATH", "ALERTS_PATH", "STATE_PATH", "NEW_HITS_PATH", "POLL_HOST_PATH",
+             "PENDING_PATH")
 
     def setUp(self):
         import seats_aero
@@ -292,6 +338,7 @@ class TestMainIntegration(unittest.TestCase):
         check.STATE_PATH = os.path.join(self.dir, "state.json")
         check.NEW_HITS_PATH = os.path.join(self.dir, "new_hits.json")
         check.POLL_HOST_PATH = os.path.join(self.dir, ".poll-host")  # absent -> allowed
+        check.PENDING_PATH = os.path.join(self.dir, "pending_hits.json")
         with open(check.CONFIG_PATH, "w") as f:
             json.dump({"api_key_env": "AWARD_TEST_KEY_MAIN",
                        "defaults": {"cabin": "business", "max_miles": 90000, "min_seats": 1},
@@ -325,6 +372,14 @@ class TestMainIntegration(unittest.TestCase):
         self.assertEqual(len(hits), 1)
         self.assertEqual(hits[0]["alert_name"], "SFO-NRT")
         self.assertEqual(hits[0]["alert_id"], "a1")
+
+    def test_undelivered_hits_accumulate_in_the_outbox_across_polls(self):
+        self.seats.search = lambda *a, **k: [native_row()]
+        self._run_main()
+        self.seats.search = lambda *a, **k: [native_row(), native_row(Date="2026-11-21")]
+        out = self._run_main()
+        self.assertIn("NEW_HITS: 1", out)               # only the 21st is new...
+        self.assertEqual(len(check.load_pending()), 2)  # ...but the unsent 20th is kept
 
     def test_auth_error_is_fatal(self):
         self.seats.search = lambda *a, **k: (_ for _ in ()).throw(self.seats.AuthError("bad"))

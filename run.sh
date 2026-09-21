@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-shot poll: search + filter + dedupe (check.py), then email new hits (notify.py).
+# One-shot poll: search + filter + dedupe (check.py), then deliver hits (notify.py).
 # Sources the gitignored .env first, because launchd does NOT inherit your shell
 # environment. Fully deterministic — safe on any timer (launchd, cron).
 set -euo pipefail
@@ -16,7 +16,6 @@ fi
 SUMMARY="$(python3 "$DIR/check.py")"
 printf '%s\n' "$SUMMARY" | grep -E '^NEW_HITS:' || true
 
-N="$(printf '%s\n' "$SUMMARY" | sed -n 's/^NEW_HITS: //p')"
-if [ "${N:-0}" -gt 0 ]; then
-  python3 "$DIR/notify.py"
-fi
+# Always run the notifier: it delivers this poll's hits AND retries any that failed
+# to send earlier (the pending_hits.json outbox). It is a silent no-op when empty.
+python3 "$DIR/notify.py"

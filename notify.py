@@ -54,13 +54,9 @@ def load_notify_cfg():
 
 
 def load_hits():
-    if not os.path.isfile(check.NEW_HITS_PATH):
-        return []
-    try:
-        with open(check.NEW_HITS_PATH) as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return []
+    """Undelivered hits: the outbox check.py fills and we ack after a successful send
+    (not new_hits.json, which only ever holds the latest poll)."""
+    return check.load_pending()
 
 
 def route_cell(h):
@@ -82,7 +78,7 @@ def build_html(hits):
         f"<td>{html.escape(str(h.get('airlines', '')))}</td>"
         f"<td>{html.escape(str(h.get('program', '')))}</td>"
         f"<td align=\"right\">{h.get('miles', 0):,}</td>"
-        f"<td align=\"right\">{html.escape(str(h.get('seats', '?')))}</td>"
+        f"<td align=\"right\">{html.escape(check.fmt_seats(h))}</td>"
         f"<td align=\"right\">{html.escape(fmt_duration(h.get('duration_min')))}</td>"
         f"<td>{html.escape(fmt_note(h))}</td></tr>"
         for h in hits
@@ -157,11 +153,26 @@ def macos_banner(h):
     subtitle = f"{h.get('date', '?')} \u00b7 {h.get('airlines', '?')}"
     if h.get("program"):
         subtitle += f" via {h['program']}"
-    seats = h.get("seats", "?")
-    message = f"{seats} seat{'' if seats == 1 else 's'} \u00b7 {fmt_note(h)}"
+    seats = check.fmt_seats(h)
+    message = f"{seats} seat{'' if seats == '1' else 's'} \u00b7 {fmt_note(h)}"
     if h.get("duration_min"):
         message += f" \u00b7 {fmt_duration(h['duration_min'])}"
     return title, subtitle, message
+
+
+def round_robin(hits):
+    """Interleave hits across alerts (order within an alert kept), so a capped
+    notifier shows every alert's best hit before any alert's second-best."""
+    queues = {}
+    for h in hits:
+        queues.setdefault(h.get("alert_id") or h.get("alert_name"), []).append(h)
+    out = []
+    while queues:
+        for k in list(queues):
+            out.append(queues[k].pop(0))
+            if not queues[k]:
+                del queues[k]
+    return out
 
 
 def notify_macos(hits, notify_cfg, test=False, _run=None):
@@ -173,8 +184,9 @@ def notify_macos(hits, notify_cfg, test=False, _run=None):
         return False
     hits = [TEST_HIT] if test else hits
     limit = int(notify_cfg.get("macos_max_banners", MACOS_MAX_BANNERS))
-    # hits arrive sorted by (alert, miles), so the cap keeps the cheapest per alert
-    banners = [macos_banner(h) for h in hits[:limit]]
+    # hits arrive sorted by (alert, miles); interleave so one busy alert can't crowd
+    # the others out of the cap
+    banners = [macos_banner(h) for h in round_robin(hits)[:limit]]
     extra = len(hits) - len(banners)
     if extra > 0:
         banners.append(("\u2708\ufe0f Award alert", f"+{extra} more new seat(s)",
@@ -201,7 +213,8 @@ def notify(hits, notify_cfg, test=False):
     """Fan out to every configured channel. Never raises. Returns True iff any
     channel delivered. An unknown channel is reported and skipped."""
     delivered = False
-    for name in notify_cfg.get("channels") or DEFAULT_CHANNELS:
+    channels = notify_cfg.get("channels")
+    for name in (DEFAULT_CHANNELS if channels is None else channels):
         fn = CHANNELS.get(name)
         if fn is None:
             print(f"notify: unknown channel '{name}' (expected one of: "
@@ -219,9 +232,16 @@ def main(argv=None):
         return
     hits = load_hits()
     if not hits:
-        print("notify: no new hits — nothing to send.")
+        return  # quiet: this runs after every poll
+    if cfg.get("channels") == []:
+        # Explicitly no built-in channel: an agent delivers from new_hits.json itself.
+        check.ack_pending(hits)
         return
-    notify(hits, cfg)
+    if notify(hits, cfg):
+        check.ack_pending(hits)
+    else:
+        print(f"notify: nothing delivered; {len(hits)} hit(s) stay queued in "
+              "pending_hits.json and will be retried next poll.", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ Trip detail (duration, connections, stops) comes back inline on each row under
 """
 import json
 import socket
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -48,7 +49,8 @@ def _coerce_ints(row):
     return row
 
 
-def build_search_url(base_url, origin, dest, cabin, start_date, end_date, take=500):
+def build_search_url(base_url, origin, dest, cabin, start_date, end_date, take=500,
+                     skip=0, cursor=None):
     params = {
         "origin_airport": origin,
         "destination_airport": dest,
@@ -59,37 +61,25 @@ def build_search_url(base_url, origin, dest, cabin, start_date, end_date, take=5
     }
     if cabin:  # omitted -> rows for every cabin (each row carries all Y/W/J/F fields)
         params["cabin"] = cabin
+    if cursor is not None:  # page N>1: the API wants the first page's cursor + a row offset
+        params["cursor"] = str(cursor)
+        params["skip"] = str(skip)
     return base_url.rstrip("/") + "/search?" + urllib.parse.urlencode(params)
 
 
-def search(base_url, api_key, origin, dest, cabin, start_date, end_date,
-           take=500, timeout=30, rate_limit_sleep=0.4, max_retries=2,
-           _urlopen=None):
-    """Query one origin->dest leg. Returns a list of native-shaped rows.
-
-    Raises ``AuthError`` on 401/403 (fatal — bad or missing key); ``SearchError``
-    on any other failure (429 after retries, timeout, non-JSON, other HTTP) so the
-    caller can skip the leg without crashing the run. ``_urlopen`` is an injection
-    seam for tests.
-    """
-    urlopen = _urlopen or urllib.request.urlopen
-    url = build_search_url(base_url, origin, dest, cabin, start_date, end_date, take)
+def _get_json(url, api_key, label, urlopen, timeout, max_retries):
+    """GET one page with retry/backoff. Raises AuthError / SearchError (see search)."""
     req = urllib.request.Request(url, headers={
         "Partner-Authorization": api_key,
         "Accept": "application/json",
         "User-Agent": USER_AGENT,  # required — Cloudflare blocks the default urllib UA
     })
-
     last_err = None
     for attempt in range(max_retries + 1):
         try:
             with urlopen(req, timeout=timeout) as resp:
                 raw = resp.read()
-            payload = json.loads(raw.decode("utf-8"))
-            rows = (payload or {}).get("data") or []
-            if rate_limit_sleep:
-                time.sleep(rate_limit_sleep)  # be polite between legs
-            return [_coerce_ints(r) for r in rows]
+            return json.loads(raw.decode("utf-8")) or {}
         except urllib.error.HTTPError as e:
             if e.code in _AUTH_STATUSES:
                 raise AuthError(f"HTTP {e.code}: Seats.aero rejected the API key") from e
@@ -97,13 +87,47 @@ def search(base_url, api_key, origin, dest, cabin, start_date, end_date,
                 time.sleep((attempt + 1) * 2)  # backoff, then retry
                 last_err = e
                 continue
-            raise SearchError(f"HTTP {e.code} for {origin}-{dest}") from e
+            raise SearchError(f"HTTP {e.code} for {label}") from e
         except (urllib.error.URLError, TimeoutError, socket.timeout) as e:
             last_err = e
             if attempt < max_retries:
                 time.sleep(attempt + 1)
                 continue
-            raise SearchError(f"network error for {origin}-{dest}: {e}") from e
+            raise SearchError(f"network error for {label}: {e}") from e
         except (json.JSONDecodeError, ValueError) as e:
-            raise SearchError(f"non-JSON response for {origin}-{dest}") from e
-    raise SearchError(f"exhausted retries for {origin}-{dest}: {last_err}")
+            raise SearchError(f"non-JSON response for {label}") from e
+    raise SearchError(f"exhausted retries for {label}: {last_err}")
+
+
+def search(base_url, api_key, origin, dest, cabin, start_date, end_date,
+           take=500, timeout=30, rate_limit_sleep=0.4, max_retries=2, max_pages=10,
+           _urlopen=None):
+    """Query one origin->dest leg. Returns a list of native-shaped rows.
+
+    Follows the API's ``hasMore``/``cursor`` pagination so a wide window isn't
+    silently truncated at ``take`` rows. Each page is one API call, so ``max_pages``
+    bounds the quota a single leg can burn; hitting it is reported on stderr.
+
+    Raises ``AuthError`` on 401/403 (fatal — bad or missing key); ``SearchError``
+    on any other failure (429 after retries, timeout, non-JSON, other HTTP) so the
+    caller can skip the leg without crashing the run. ``_urlopen`` is an injection
+    seam for tests.
+    """
+    urlopen = _urlopen or urllib.request.urlopen
+    label = f"{origin}-{dest}"
+    rows, cursor = [], None
+    for _page in range(max_pages):
+        url = build_search_url(base_url, origin, dest, cabin, start_date, end_date,
+                               take, skip=len(rows), cursor=cursor)
+        payload = _get_json(url, api_key, label, urlopen, timeout, max_retries)
+        page = payload.get("data") or []
+        rows.extend(page)
+        if rate_limit_sleep:
+            time.sleep(rate_limit_sleep)  # be polite between calls
+        cursor = payload.get("cursor")
+        if not payload.get("hasMore") or not page or cursor is None:
+            break
+    else:
+        print(f"  ! {label}: stopped after {max_pages} pages ({len(rows)} rows); "
+              "results may be incomplete — narrow the date window", file=sys.stderr)
+    return [_coerce_ints(r) for r in rows]

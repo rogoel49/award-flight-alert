@@ -73,6 +73,31 @@ class TestSearch(unittest.TestCase):
         self.assertNotIn("cabin", seats_aero.build_search_url(
             "https://x/partnerapi", "SFO", "NRT", None, "2026-11-01", "2026-11-30"))
 
+    def test_follows_pagination_with_cursor_and_skip(self):
+        pages = [json.dumps({"data": [{"ID": "a"}, {"ID": "b"}], "hasMore": True, "cursor": 77}),
+                 json.dumps({"data": [{"ID": "c"}], "hasMore": False, "cursor": 77})]
+        urls = []
+
+        def urlopen(req, timeout=None):
+            urls.append(req.full_url)
+            return FakeResp(pages[len(urls) - 1].encode())
+
+        rows = seats_aero.search("https://x/partnerapi", "K", "SFO", "NRT", "business",
+                                 "2026-11-01", "2026-11-30", rate_limit_sleep=0,
+                                 _urlopen=urlopen)
+        self.assertEqual([r["ID"] for r in rows], ["a", "b", "c"])
+        self.assertNotIn("cursor", urls[0])
+        self.assertIn("cursor=77", urls[1])
+        self.assertIn("skip=2", urls[1])
+
+    def test_max_pages_bounds_the_calls(self):
+        body = json.dumps({"data": [{"ID": "x"}], "hasMore": True, "cursor": 1})
+        captured = []
+        rows = seats_aero.search("https://x/partnerapi", "K", "SFO", "NRT", "business",
+                                 "2026-11-01", "2026-11-30", rate_limit_sleep=0, max_pages=3,
+                                 _urlopen=urlopen_returning(body, captured))
+        self.assertEqual((len(rows), len(captured)), (3, 3))
+
     def test_401_raises_auth_error(self):
         err = urllib.error.HTTPError("u", 401, "Unauthorized", None, None)
         with self.assertRaises(seats_aero.AuthError):

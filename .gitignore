@@ -5,6 +5,7 @@ alerts.json
 .env
 state.json
 new_hits.json
+pending_hits.json
 .poll-host
 *.lock
 *.log

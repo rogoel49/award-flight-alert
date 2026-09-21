@@ -1,7 +1,11 @@
+import json
 import os
+import shutil
 import smtplib
+import tempfile
 import unittest
 
+import check
 import notify
 
 
@@ -104,6 +108,45 @@ class TestMacos(unittest.TestCase):
     def test_failure_is_caught(self):
         calls = []
         self.assertFalse(notify.notify_macos([HIT], {}, _run=self.fake_run(calls, fail=True)))
+
+
+class TestRoundRobin(unittest.TestCase):
+    def test_every_alert_gets_a_slot_before_any_gets_two(self):
+        hits = [dict(HIT, alert_id="mex", miles=m) for m in (1, 2, 3)] + \
+               [dict(HIT, alert_id="hnd", miles=9)]
+        self.assertEqual([(h["alert_id"], h["miles"]) for h in notify.round_robin(hits)],
+                         [("mex", 1), ("hnd", 9), ("mex", 2), ("mex", 3)])
+
+
+class TestOutboxDelivery(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self._saved = (check.PENDING_PATH, check.CONFIG_PATH, notify.notify)
+        check.PENDING_PATH = os.path.join(self.dir, "pending_hits.json")
+        check.CONFIG_PATH = os.path.join(self.dir, "config.json")
+        check.queue_pending([dict(HIT, alert_id="a1")], "2026-07-18")
+
+    def tearDown(self):
+        check.PENDING_PATH, check.CONFIG_PATH, notify.notify = self._saved
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _main(self, channels, delivered):
+        with open(check.CONFIG_PATH, "w") as f:
+            json.dump({"notify": {"channels": channels}}, f)
+        notify.notify = lambda hits, cfg, test=False: delivered
+        notify.main([])
+
+    def test_failed_delivery_keeps_hits_for_retry(self):
+        self._main(["macos"], delivered=False)
+        self.assertEqual(len(check.load_pending()), 1)
+
+    def test_successful_delivery_acks(self):
+        self._main(["macos"], delivered=True)
+        self.assertEqual(check.load_pending(), [])
+
+    def test_explicitly_no_channels_drains_the_outbox(self):
+        self._main([], delivered=False)  # agent-owned notification: don't grow forever
+        self.assertEqual(check.load_pending(), [])
 
 
 class TestChannels(unittest.TestCase):

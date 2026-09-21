@@ -46,6 +46,10 @@ ALERTS_PATH = os.environ.get("AWARD_ALERTS", os.path.join(HERE, "alerts.json"))
 STATE_PATH = os.environ.get("AWARD_STATE", os.path.join(HERE, "state.json"))
 NEW_HITS_PATH = os.environ.get("AWARD_NEW_HITS", os.path.join(HERE, "new_hits.json"))
 POLL_HOST_PATH = os.environ.get("AWARD_POLL_HOST", os.path.join(HERE, ".poll-host"))
+# Outbox of hits not yet delivered. check.py appends, notify.py acks on success — so
+# a failed send is retried next poll instead of being lost behind the dedupe state.
+PENDING_PATH = os.environ.get("AWARD_PENDING", os.path.join(HERE, "pending_hits.json"))
+PENDING_MAX = 200  # bound the outbox if delivery stays broken for a long time
 
 
 # --------------------------------------------------------------------------- #
@@ -205,8 +209,11 @@ def filter_rows(rows, params, excluded, cfg, origin):
         miles = r.get(f"{pfx}MileageCost") or 0
         if miles <= 0 or miles >= cap:
             continue
+        # Several programs (e.g. american) report 0 remaining seats on an *available*
+        # row — that means "count unknown", not "none". Availability itself proves
+        # one seat, so keep it for a 1-seat alert; a 2+ seat alert can't verify it.
         seats = r.get(f"{pfx}RemainingSeats") or 0
-        if seats < min_seats:
+        if seats < min_seats and not (seats == 0 and min_seats <= 1):
             continue
         day = r.get("Date")
         if not day:  # a dateless hit isn't actionable and would leak a permanent state entry
@@ -270,6 +277,11 @@ def fmt_duration(minutes):
     return f"{h}h{m:02d}m"
 
 
+def fmt_seats(h):
+    """Seat count for display; 0 means the program didn't report one."""
+    return str(h.get("seats") or "?")
+
+
 def fmt_note(h):
     if h.get("direct"):
         return "Nonstop"
@@ -305,6 +317,35 @@ def dedupe(all_hits, state, today_iso):
     state = {k: v for k, v in state.items()
              if not (isinstance(v, dict) and v.get("date", "9999") < today_iso)}
     return new_hits, state
+
+
+def load_pending(path=None):
+    path = path or PENDING_PATH
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def queue_pending(new_hits, today_iso, path=None):
+    """Add this poll's new hits to the outbox (keyed, so a re-detected hit replaces
+    itself rather than duplicating) and drop entries whose flight date has passed."""
+    pending = {hit_key(h): h for h in load_pending(path)
+               if str(h.get("date", "9999")) >= today_iso}
+    for h in new_hits:
+        pending[hit_key(h)] = h
+    items = list(pending.values())[-PENDING_MAX:]
+    _atomic_write(path or PENDING_PATH, json.dumps(items, indent=2))
+    return items
+
+
+def ack_pending(delivered, path=None):
+    """Remove delivered hits from the outbox, leaving any queued since they were read."""
+    done = {hit_key(h) for h in delivered}
+    rest = [h for h in load_pending(path) if hit_key(h) not in done]
+    _atomic_write(path or PENDING_PATH, json.dumps(rest, indent=2))
 
 
 def is_designated_poller():
@@ -384,6 +425,9 @@ def main():
                       file=sys.stderr)
 
     new_hits, state = dedupe(all_hits, state, today_iso)
+    # Outbox BEFORE state: if we die between the two writes the hits are re-detected
+    # next poll (and replace themselves in the outbox) rather than vanishing.
+    queue_pending(new_hits, today_iso)
     save_state(state)
 
     new_hits.sort(key=lambda h: (h.get("alert_name", ""), h["miles"], h["date"]))
@@ -398,7 +442,7 @@ def main():
         for h in new_hits:
             route = f"{h.get('origin','?')}-{h['dest']}"
             print(f"  {route:<11}{h['date']:<12}{h['airlines']:<9}"
-                  f"{h['miles']:>8,}  {h['seats']:>3} seat  "
+                  f"{h['miles']:>8,}  {fmt_seats(h):>3} seat  "
                   f"{fmt_duration(h['duration_min']):>7}  {fmt_note(h)}", file=sys.stderr)
     else:
         print("No new availability since last run.", file=sys.stderr)
