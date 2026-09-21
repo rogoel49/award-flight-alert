@@ -45,6 +45,53 @@ Set `notify.channels` in `config.json` to any combination of:
 `osascript`, so macOS files them under **Script Editor** in System Settings → Notifications — allow
 that app (and check Focus / Do Not Disturb) if nothing appears.
 
+## Round trips
+
+Give an alert a return window and it becomes a round trip: both directions are searched, and you're
+alerted only when an outbound **and** a return exist that fit your trip length and mileage caps — one
+notification per *trip you could actually take*, not a stream of one-way seats you then have to match
+up by hand.
+
+```bash
+python3 manage.py add --name "Tokyo Dec" --from SFO --to HND,NRT --cabin business \
+  --start 2026-12-12 --end 2026-12-16 \
+  --return-start 2026-12-18 --return-end 2026-12-24 \
+  --min-nights 6 --max-nights 10 \
+  --max-miles 105000 --max-total-miles 200000
+```
+
+`--start/--end` is the outbound window, `--max-miles` caps each leg, and `--max-total-miles` caps the
+two combined.
+
+Legs are paired within a cabin and may be different programs (they're booked as two one-way awards).
+For each (outbound date, return date) only the best pairing — cheapest, then fastest — is reported, and
+you're re-alerted when a date pair is new or its total gets cheaper. With several destinations, the
+return may leave from a different airport than you arrived at (an open jaw). A round trip costs two API
+calls per origin×destination per poll; identical searches across alerts are made once per poll.
+
+## Points wallet
+
+Tell it what you can actually spend and it stops alerting on programs you can't book:
+
+```json
+"wallet": { "programs": ["united"], "currencies": ["chase", "amex"] }
+```
+
+`currencies` (`chase`, `amex`, `capitalone`, `citi`, `bilt`) expand through a transfer-partner table;
+`programs` are miles you hold directly. Hits then show how you'd pay — `via aeroplan ← Chase UR, Amex MR`
+— and the program list is sent to the API so fewer rows come back. `python3 manage.py wallet` prints
+what your wallet resolves to; `--programs a,b` on an alert overrides it. With no wallet, nothing is
+filtered. The partner table is a dated snapshot (override it with `wallet.transfer_partners`) —
+**always confirm on the bank's site before transferring; transfers are irreversible.**
+
+## Reliability
+
+- **No lost alerts.** New hits go to a `pending_hits.json` outbox that is cleared only after a channel
+  delivers, so a failed send is retried on the next poll instead of vanishing behind the dedupe state.
+- **No truncated searches.** Results are paginated (`hasMore`/`cursor`), bounded per leg.
+- **Unknown seat counts.** Programs that report `0` seats on an available row (e.g. American) are kept
+  for 1-seat alerts and shown as `?`; alerts needing 2+ seats require a verified count.
+
 ## Privacy & what's committed
 
 **Only code, docs, and `*.example` configs are in this repo.** Your alert list, real config, secrets,
@@ -53,7 +100,7 @@ and dedupe state are gitignored and live only on your machine:
 - committed: `check.py`, `manage.py`, `notify.py`, `seats_aero.py`, `run.sh`, `setup.sh`, the plist,
   `config.example.json`, `alerts.example.json`, `.env.example`, docs.
 - **local-only (gitignored):** `config.json`, `alerts.json`, `.env`, `state.json`, `new_hits.json`,
-  `.poll-host`.
+  `pending_hits.json`, `.poll-host`.
 
 ## Quick start
 

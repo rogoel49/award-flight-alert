@@ -62,7 +62,7 @@ def load_hits():
 def route_cell(h):
     # Escape everything: origin/dest come from the API; a value must never break
     # out of the HTML. Only render a clickable anchor for https links.
-    label = html.escape(f"{h.get('origin', '?')}→{h.get('dest', '?')}")
+    label = html.escape(check.fmt_route(h, sep="→"))
     link = h.get("link") or ""
     if link.startswith("https://"):
         return f'<a href="{html.escape(link, quote=True)}">{label}</a>'
@@ -74,7 +74,7 @@ def build_html(hits):
     # them so a hostile value can't inject markup into an email you trust.
     rows = "\n".join(
         f"<tr><td>{html.escape(str(h.get('alert_name', '')))}</td><td>{route_cell(h)}</td>"
-        f"<td>{html.escape(str(h.get('date', '')))}</td>"
+        f"<td>{html.escape(check.fmt_dates(h))}</td>"
         f"<td>{html.escape(str(h.get('airlines', '')))}</td>"
         f"<td>{html.escape(check.fmt_program(h))}</td>"
         f"<td align=\"right\">{h.get('miles', 0):,}</td>"
@@ -148,8 +148,13 @@ def notify_email(hits, notify_cfg, test=False):
 
 def macos_banner(h):
     """(title, subtitle, message) for one hit."""
-    title = (f"\u2708\ufe0f {h.get('origin', '?')}\u2192{h.get('dest', '?')}  "
+    title = (f"\u2708\ufe0f {check.fmt_route(h, sep=chr(0x2192))}  "
              f"{h.get('miles', 0):,} mi {h.get('cabin', '')}").rstrip()
+    if h.get("trip") == "round":
+        subtitle = f"{check.fmt_dates(h)} \u00b7 {h.get('nights', '?')} nights"
+        message = (f"out: {check.fmt_leg(h['outbound'])} \u00b7 "
+                   f"back: {check.fmt_leg(h['inbound'])}")
+        return title, subtitle, message
     subtitle = f"{h.get('date', '?')} \u00b7 {h.get('airlines', '?')}"
     if h.get("program"):
         subtitle += f" via {check.fmt_program(h)}"

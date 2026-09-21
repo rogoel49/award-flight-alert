@@ -134,6 +134,29 @@ def cmd_add(args):
     if start and end and end < start:
         _fail("--end must be on or after --start")
 
+    # Round trip: a return window turns the alert into a paired out+back search.
+    ret_start = _parse_date(args.return_start, "--return-start")
+    ret_end = _parse_date(args.return_end, "--return-end")
+    round_trip = bool(ret_start or ret_end)
+    if round_trip:
+        if not (ret_start and ret_end):
+            _fail("a round trip needs both --return-start and --return-end")
+        if not (start and end):
+            _fail("a round trip needs an explicit outbound window (--start and --end)")
+        if ret_end < ret_start:
+            _fail("--return-end must be on or after --return-start")
+        if ret_end <= start:
+            _fail("the return window must end after the outbound window starts")
+    elif any(v is not None for v in (args.min_nights, args.max_nights, args.max_total_miles)):
+        _fail("--min-nights/--max-nights/--max-total-miles only apply to a round trip "
+              "(add --return-start and --return-end)")
+    if args.min_nights is not None and args.min_nights < 0:
+        _fail("--min-nights must be >= 0")
+    if args.max_nights is not None and args.max_nights < (args.min_nights or 0):
+        _fail("--max-nights must be >= --min-nights")
+    if args.max_total_miles is not None and args.max_total_miles <= 0:
+        _fail("--max-total-miles must be positive")
+
     alert = {
         "name": args.name,           # free-form; stored as DATA only
         "origins": origins,
@@ -145,6 +168,11 @@ def cmd_add(args):
         "programs": programs,
         "start_date": start,
         "end_date": end,
+        "return_start": ret_start,
+        "return_end": ret_end,
+        "min_nights": args.min_nights,
+        "max_nights": args.max_nights,
+        "max_total_miles": args.max_total_miles,
         "enabled": True,
     }
     alert = {k: v for k, v in alert.items() if v is not None}  # drop unset -> inherit
@@ -169,8 +197,9 @@ def cmd_list(args):
         return
     for a in alerts:
         flag = "on " if a.get("enabled", True) else "off"
+        arrow = "<->" if check.is_round_trip(a) else "->"
         print(f"[{flag}] {a.get('id')}  {a.get('name', '')}  "
-              f"{','.join(a.get('origins', []))}->{','.join(a.get('destinations', []))}")
+              f"{','.join(a.get('origins', []))}{arrow}{','.join(a.get('destinations', []))}")
     print(f"{len(alerts)} alert(s)", file=sys.stderr)
 
 
@@ -232,6 +261,16 @@ def build_parser():
                    help="only these award programs, comma-separated (default: your wallet, else all)")
     a.add_argument("--start", default=None, help="YYYY-MM-DD (else rolling window)")
     a.add_argument("--end", default=None, help="YYYY-MM-DD")
+    rt = a.add_argument_group(
+        "round trip", "give a return window to alert only on bookable out+back pairs "
+        "(--start/--end is then the outbound window; --max-miles caps each leg)")
+    rt.add_argument("--return-start", dest="return_start", default=None, help="YYYY-MM-DD")
+    rt.add_argument("--return-end", dest="return_end", default=None, help="YYYY-MM-DD")
+    rt.add_argument("--min-nights", dest="min_nights", type=int, default=None,
+                    help="min days between the two departures (default 1)")
+    rt.add_argument("--max-nights", dest="max_nights", type=int, default=None)
+    rt.add_argument("--max-total-miles", dest="max_total_miles", type=int, default=None,
+                    help="cap on outbound + return miles combined")
     a.set_defaults(func=cmd_add)
 
     w = sub.add_parser("wallet", help="show which programs your wallet can book")

@@ -10,7 +10,8 @@ alerts the same way. Adding a second agent is a wiring step, not a code change.
 
 | Command | What it does | Output |
 |---|---|---|
-| `python3 manage.py add --name <n> --from <A[,B]> --to <C[,D]> [--cabin <c>] [--max-miles <n>] [--min-seats <n>] [--only-direct] [--start YYYY-MM-DD] [--end YYYY-MM-DD]` | Add (or idempotently replace) an alert | JSON `{"ok": true, "action": "added", "alert": {…, "_resolved": {…}}}` |
+| `python3 manage.py add --name <n> --from <A[,B]> --to <C[,D]> [--cabin <c>] [--max-miles <n>] [--min-seats <n>] [--only-direct] [--programs <p[,q]>] [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--return-start YYYY-MM-DD --return-end YYYY-MM-DD [--min-nights <n>] [--max-nights <n>] [--max-total-miles <n>]]` | Add (or idempotently replace) an alert | JSON `{"ok": true, "action": "added", "alert": {…, "_resolved": {…}}}` |
+| `python3 manage.py wallet` | Show which programs the configured points wallet can book (read-only) | JSON `{"ok": true, "configured": true, "programs": {"aeroplan": ["Chase UR"], …}}` |
 | `python3 manage.py list --json` | List alerts with effective (resolved) params | JSON `{"ok": true, "alerts": [...], "count": N}` |
 | `python3 manage.py disable --id <id>` / `enable --id <id>` | Pause / resume an alert | JSON `{"ok": true, "action": "...", "id": "..."}` |
 | `python3 manage.py rm --id <id>` | Remove an alert | JSON `{"ok": true, "action": "removed", "id": "..."}` |
@@ -28,7 +29,12 @@ JSON data only — never interpreted as shell or git.
 - `new_hits.json` — written by `check.py` each poll; the seam an agent reads to notify its own way.
   Each hit (authoritative shape is the dict built in `check.filter_rows`):
   `{alert_id, alert_name, origin, dest, date, cabin, region, airlines, program, miles, seats,
-  direct, duration_min, connections, stops, taxes_cents, link}`.
+  direct, duration_min, connections, stops, taxes_cents, link, funding}`.
+  A **round-trip** hit has the same shape (so it renders anywhere a hit does) with `miles`/`taxes_cents`
+  totalled, `airlines`/`program` as `"out / back"`, plus `trip: "round"`, `return_date`, `nights`,
+  `return_link`, and the two full leg hits under `outbound` and `inbound`.
+- `pending_hits.json` — the delivery outbox for the built-in notifier (hits not yet delivered). Agents
+  doing their own delivery should read `new_hits.json` and set `notify.channels` to `[]`.
 
 ## Invariants (do not violate)
 
@@ -50,6 +56,8 @@ syntax differs per agent; confirm it against that agent's own docs at wire-up.
 - Expose `python3 <repo>/manage.py add|list|rm|enable|disable` as a callable tool.
 - Give the agent this rule: translate a natural-language request ("watch business SFO→Tokyo under 90k
   in November, 2 seats") into a single `manage.py add` call; read the JSON result back to confirm.
+  A request with a return ("Tokyo for about a week in mid-December") is ONE round-trip alert
+  (`--return-start/--return-end` + `--min-nights/--max-nights`), not two one-way alerts.
 - Optional — **agent-owned notification:** instead of (or in addition to) the built-in SMTP email,
   the agent can watch `new_hits.json` after each poll and deliver hits through its own channel
   (push, Slack, chat). This is the one piece that is genuinely per-agent; the built-in SMTP email is

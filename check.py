@@ -34,6 +34,9 @@ CABIN_PREFIX = {"economy": "Y", "premium": "W", "business": "J", "first": "F"}
 # Pseudo-cabin: watch every cabin under one cap, for the price of ONE API call per
 # leg (vs. four single-cabin alerts burning 4x the daily Partner API quota).
 ANY_CABIN = "any"
+# An alert with a return window is a round trip. These fields define it.
+ROUND_TRIP_FIELDS = ("return_start", "return_end", "min_nights", "max_nights",
+                     "max_total_miles")
 
 
 def cabin_prefix(cabin):
@@ -95,6 +98,9 @@ def content_id(alert):
     # they existed keep their id (and their dedupe state).
     if alert.get("programs"):
         key += "|programs=" + ",".join(sorted(alert["programs"]))
+    for field in ROUND_TRIP_FIELDS:
+        if alert.get(field) is not None:
+            key += f"|{field}={alert[field]}"
     return hashlib.sha1(key.encode()).hexdigest()[:12]
 
 
@@ -279,6 +285,74 @@ def filter_alert_rows(rows, params, excluded, cfg, origin):
 
 
 # --------------------------------------------------------------------------- #
+# round trips
+# --------------------------------------------------------------------------- #
+def is_round_trip(alert):
+    return bool(alert.get("return_start") and alert.get("return_end"))
+
+
+def _nights(out_day, back_day):
+    try:
+        return (date.fromisoformat(back_day) - date.fromisoformat(out_day)).days
+    except (TypeError, ValueError):
+        return None
+
+
+def pair_round_trips(outs, backs, min_nights=1, max_nights=None, max_total_miles=None):
+    """Join outbound and return leg-hits into bookable round trips.
+
+    A pair is valid when the return departs ``min_nights..max_nights`` days after the
+    outbound, both legs are the same cabin, and (if set) the combined miles beat
+    ``max_total_miles``. Each leg already passed the alert's per-leg filters. The
+    legs may be different programs — they're booked as two one-way awards.
+
+    Many leg combinations share a date pair, so only the best (cheapest, then
+    fastest) is reported per (outbound date, return date, cabin): one alert per
+    *trip you could take*, not per permutation of flights.
+    """
+    best = {}
+    for o in outs:
+        for b in backs:
+            if o["cabin"] != b["cabin"]:
+                continue
+            nights = _nights(o["date"], b["date"])
+            if nights is None or nights < min_nights:
+                continue
+            if max_nights is not None and nights > max_nights:
+                continue
+            total = o["miles"] + b["miles"]
+            if max_total_miles is not None and total >= max_total_miles:
+                continue
+            rank = (total, (o.get("duration_min") or 10 ** 6) + (b.get("duration_min") or 10 ** 6))
+            k = (o["date"], b["date"], o["cabin"])
+            if k not in best or rank < best[k][0]:
+                best[k] = (rank, o, b, nights)
+    return [_pair_hit(o, b, nights) for _rank, o, b, nights in best.values()]
+
+
+def _pair_hit(o, b, nights):
+    """A round trip in the ordinary hit shape (so every notifier/agent that handles a
+    hit handles this), plus ``trip``/``return_date``/``nights`` and the two legs."""
+    seats = 0 if 0 in (o["seats"], b["seats"]) else min(o["seats"], b["seats"])
+    return {
+        "trip": "round",
+        "origin": o["origin"], "dest": o["dest"], "region": o.get("region", ""),
+        "date": o["date"], "return_date": b["date"], "nights": nights,
+        "cabin": o["cabin"],
+        "airlines": f"{o['airlines']} / {b['airlines']}",
+        "program": f"{o['program']} / {b['program']}",
+        "funding": [],
+        "miles": o["miles"] + b["miles"],
+        "seats": seats,  # 0 = at least one leg's count is unknown
+        "direct": bool(o["direct"] and b["direct"]),
+        "duration_min": None, "connections": [], "stops": None,
+        "taxes_cents": (o.get("taxes_cents") or 0) + (b.get("taxes_cents") or 0),
+        "link": o.get("link", ""), "return_link": b.get("link", ""),
+        "outbound": o, "inbound": b,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # formatting + dedupe key
 # --------------------------------------------------------------------------- #
 def fmt_duration(minutes):
@@ -300,7 +374,28 @@ def fmt_program(h):
     return f"{program} \u2190 {', '.join(how)}" if how else program
 
 
+def fmt_route(h, sep="-"):
+    if h.get("trip") == "round":
+        return f"{h.get('origin', '?')}\u21c4{h.get('dest', '?')}"
+    return f"{h.get('origin', '?')}{sep}{h.get('dest', '?')}"
+
+
+def fmt_dates(h):
+    if h.get("trip") == "round":
+        return f"{h.get('date', '?')} \u2192 {h.get('return_date', '?')}"
+    return str(h.get("date", ""))
+
+
+def fmt_leg(leg):
+    """One leg of a round trip, e.g. ``NH aeroplan ← Chase UR 75,000 (Nonstop)``."""
+    return (f"{leg.get('airlines', '?')} {fmt_program(leg)} {leg.get('miles', 0):,} "
+            f"({fmt_note(leg)})")
+
+
 def fmt_note(h):
+    if h.get("trip") == "round":
+        return (f"{h.get('nights', '?')} nights \u00b7 out: {fmt_leg(h['outbound'])} "
+                f"\u00b7 back: {fmt_leg(h['inbound'])}")
     if h.get("direct"):
         return "Nonstop"
     conns = h.get("connections") or []
@@ -311,6 +406,10 @@ def fmt_note(h):
 
 
 def hit_key(h):
+    if h.get("trip") == "round":
+        # Keyed on the trip, not the flights: re-alert for a new date pair or a lower
+        # total, not because the cheapest pairing moved to a different airline.
+        return f"{h['alert_id']}|RT|{h['date']}|{h['return_date']}|{h.get('cabin','')}"
     # cabin is part of the key: an any-cabin alert yields several hits per row, and
     # a cheap economy seat must not mask (dedupe away) a business seat on the same date.
     return (f"{h['alert_id']}|{h.get('origin','')}|{h['dest']}|{h['date']}|"
@@ -366,6 +465,37 @@ def ack_pending(delivered, path=None):
     _atomic_write(path or PENDING_PATH, json.dumps(rest, indent=2))
 
 
+def search_legs(cfg, api_key, params, excluded, origins, dests, start, end, cache):
+    """Search + filter every origin x dest leg for one direction of an alert. A leg
+    that errors is reported and skipped; an auth failure stops the whole run."""
+    out = []
+    sources = params.get("programs")
+    for origin in origins:
+        for dest in dests:
+            ck = (origin, dest, api_cabin(params), start, end,
+                  tuple(sorted(sources)) if sources else None)
+            try:
+                if ck not in cache:
+                    cache[ck] = seats_aero.search(cfg["base_url"], api_key, origin, dest,
+                                                  api_cabin(params), start, end,
+                                                  sources=sources)
+                rows = cache[ck]
+            except seats_aero.AuthError as e:
+                sys.exit(f"ERROR: {e}")
+            except seats_aero.SearchError as e:
+                print(f"  ! {origin}-{dest}: {e}", file=sys.stderr)
+                continue
+            try:
+                hits = filter_alert_rows(rows, params, excluded, cfg, origin)
+            except Exception as e:  # a malformed row must not kill the whole poll
+                print(f"  ! {origin}-{dest}: filter error: {e}", file=sys.stderr)
+                continue
+            out.extend(hits)
+            print(f"  {origin}-{dest} {start}..{end}: {len(rows)} rows, {len(hits)} under cap",
+                  file=sys.stderr)
+    return out
+
+
 def is_designated_poller():
     """True if this host may poll for real. A missing marker (fresh/single host)
     allows; a marker for a different host blocks."""
@@ -415,6 +545,7 @@ def main():
     state = load_state()
     today_iso = date.today().isoformat()
 
+    cache = {}  # one poll, one call per distinct search — overlapping alerts share rows
     all_hits = []
     for alert in alerts:
         aid = alert.get("id") or content_id(alert)
@@ -423,31 +554,23 @@ def main():
         params["programs"], params["funding"] = wallet.resolve_programs(alert, cfg)
         excluded = cfg["_excluded_airlines"] if params["respect_exclusions"] else set()
         start, end = alert_window(alert, defaults)
-        print(f"[{name}] {','.join(alert.get('origins', []))} -> "
-              f"{','.join(alert.get('destinations', []))}  {start}..{end} "
+        origins, dests = alert.get("origins", []), alert.get("destinations", [])
+        arrow = "<->" if is_round_trip(alert) else "->"
+        print(f"[{name}] {','.join(origins)} {arrow} {','.join(dests)}  {start}..{end} "
               f"({params['cabin']} < {params['max_miles']:,})", file=sys.stderr)
-        for origin in alert.get("origins", []):
-            for dest in alert.get("destinations", []):
-                try:
-                    rows = seats_aero.search(cfg["base_url"], api_key, origin, dest,
-                                             api_cabin(params), start, end,
-                                             sources=params["programs"])
-                except seats_aero.AuthError as e:
-                    sys.exit(f"ERROR: {e}")
-                except seats_aero.SearchError as e:
-                    print(f"  ! {origin}-{dest}: {e}", file=sys.stderr)
-                    continue
-                try:
-                    hits = filter_alert_rows(rows, params, excluded, cfg, origin)
-                except Exception as e:  # a malformed row must not kill the whole poll
-                    print(f"  ! {origin}-{dest}: filter error: {e}", file=sys.stderr)
-                    continue
-                for h in hits:
-                    h["alert_id"] = aid
-                    h["alert_name"] = name
-                all_hits.extend(hits)
-                print(f"  {origin}-{dest}: {len(rows)} rows, {len(hits)} under cap",
-                      file=sys.stderr)
+        hits = search_legs(cfg, api_key, params, excluded, origins, dests, start, end, cache)
+        if is_round_trip(alert):
+            backs = search_legs(cfg, api_key, params, excluded, dests, origins,
+                                alert["return_start"], alert["return_end"], cache)
+            n_out = len(hits)
+            hits = pair_round_trips(hits, backs, int(alert.get("min_nights") or 1),
+                                    alert.get("max_nights"), alert.get("max_total_miles"))
+            print(f"  round trip: {n_out} outbound x {len(backs)} return legs -> "
+                  f"{len(hits)} bookable date pair(s)", file=sys.stderr)
+        for h in hits:
+            h["alert_id"] = aid
+            h["alert_name"] = name
+        all_hits.extend(hits)
 
     new_hits, state = dedupe(all_hits, state, today_iso)
     # Outbox BEFORE state: if we die between the two writes the hits are re-detected
@@ -465,8 +588,7 @@ def main():
     if new_hits:
         print(f"\n{len(new_hits)} NEW under-cap seats:", file=sys.stderr)
         for h in new_hits:
-            route = f"{h.get('origin','?')}-{h['dest']}"
-            print(f"  {route:<11}{h['date']:<12}{h['airlines']:<9}"
+            print(f"  {fmt_route(h):<11}{fmt_dates(h):<12} {h['airlines']:<9}"
                   f"{h['miles']:>8,}  {fmt_seats(h):>3} seat  "
                   f"{fmt_duration(h['duration_min']):>7}  {fmt_note(h)}", file=sys.stderr)
     else:
