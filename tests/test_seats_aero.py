@@ -73,6 +73,12 @@ class TestSearch(unittest.TestCase):
         self.assertNotIn("cabin", seats_aero.build_search_url(
             "https://x/partnerapi", "SFO", "NRT", None, "2026-11-01", "2026-11-30"))
 
+    def test_sources_filter_is_sent_sorted(self):
+        url = seats_aero.build_search_url("https://x/partnerapi", "SFO", "HND", "business",
+                                          "2026-12-12", "2026-12-16",
+                                          sources={"united", "aeroplan"})
+        self.assertIn("sources=aeroplan%2Cunited", url)
+
     def test_follows_pagination_with_cursor_and_skip(self):
         pages = [json.dumps({"data": [{"ID": "a"}, {"ID": "b"}], "hasMore": True, "cursor": 77}),
                  json.dumps({"data": [{"ID": "c"}], "hasMore": False, "cursor": 77})]

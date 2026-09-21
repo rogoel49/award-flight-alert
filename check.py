@@ -27,6 +27,7 @@ from datetime import date, timedelta
 from urllib.parse import quote
 
 import seats_aero
+import wallet
 
 # Map an alert's cabin to the API field prefix and trip Cabin value.
 CABIN_PREFIX = {"economy": "Y", "premium": "W", "business": "J", "first": "F"}
@@ -90,6 +91,10 @@ def content_id(alert):
         str(alert.get("start_date", "")),
         str(alert.get("end_date", "")),
     ])
+    # Newer optional fields join the identity only when set, so alerts created before
+    # they existed keep their id (and their dedupe state).
+    if alert.get("programs"):
+        key += "|programs=" + ",".join(sorted(alert["programs"]))
     return hashlib.sha1(key.encode()).hexdigest()[:12]
 
 
@@ -202,6 +207,8 @@ def filter_rows(rows, params, excluded, cfg, origin):
     cap = params["max_miles"]
     min_seats = params["min_seats"]
     only_direct = params["only_direct"]
+    programs = params.get("programs")    # set of bookable programs, or None for all
+    funding = params.get("funding") or {}
     hits = []
     for r in rows:
         if not r.get(f"{pfx}Available"):
@@ -215,6 +222,9 @@ def filter_rows(rows, params, excluded, cfg, origin):
         seats = r.get(f"{pfx}RemainingSeats") or 0
         if seats < min_seats and not (seats == 0 and min_seats <= 1):
             continue
+        program = r.get("Source") or (r.get("Route") or {}).get("Source") or ""
+        if programs is not None and program not in programs:
+            continue  # a seat in a program you can't book is noise
         day = r.get("Date")
         if not day:  # a dateless hit isn't actionable and would leak a permanent state entry
             continue
@@ -235,7 +245,8 @@ def filter_rows(rows, params, excluded, cfg, origin):
             "date": day,
             "cabin": cabin,
             "airlines": airlines or "?",
-            "program": r.get("Source") or route.get("Source") or "",
+            "program": program,
+            "funding": funding.get(program, []),
             "miles": int(miles),
             "seats": int(seats),
             "direct": direct,
@@ -280,6 +291,13 @@ def fmt_duration(minutes):
 def fmt_seats(h):
     """Seat count for display; 0 means the program didn't report one."""
     return str(h.get("seats") or "?")
+
+
+def fmt_program(h):
+    """Program plus how you'd fund it, e.g. ``aeroplan ← Chase UR, Amex MR``."""
+    program = h.get("program") or ""
+    how = [f for f in (h.get("funding") or []) if f != "miles you hold"]
+    return f"{program} \u2190 {', '.join(how)}" if how else program
 
 
 def fmt_note(h):
@@ -387,6 +405,11 @@ def main():
     if not api_key:
         sys.exit(f"ERROR: {cfg['api_key_env']} not set in the environment")
 
+    try:
+        wallet.funding(cfg)
+    except wallet.WalletError as e:
+        sys.exit(f"ERROR: {e}")
+
     defaults = cfg["defaults"]
     alerts = [a for a in load_alerts() if a.get("enabled", True)]
     state = load_state()
@@ -397,6 +420,7 @@ def main():
         aid = alert.get("id") or content_id(alert)
         name = alert.get("name", aid)
         params = resolve(alert, defaults)
+        params["programs"], params["funding"] = wallet.resolve_programs(alert, cfg)
         excluded = cfg["_excluded_airlines"] if params["respect_exclusions"] else set()
         start, end = alert_window(alert, defaults)
         print(f"[{name}] {','.join(alert.get('origins', []))} -> "
@@ -406,7 +430,8 @@ def main():
             for dest in alert.get("destinations", []):
                 try:
                     rows = seats_aero.search(cfg["base_url"], api_key, origin, dest,
-                                             api_cabin(params), start, end)
+                                             api_cabin(params), start, end,
+                                             sources=params["programs"])
                 except seats_aero.AuthError as e:
                     sys.exit(f"ERROR: {e}")
                 except seats_aero.SearchError as e:

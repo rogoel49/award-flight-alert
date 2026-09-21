@@ -10,6 +10,10 @@
     "respect_exclusions": true
   },
   "excluded_airlines": [],
+  "wallet": {
+    "programs": [],
+    "currencies": []
+  },
   "seats_aero_url_template": "https://seats.aero/search?origins={origin}&destinations={dest}&startDate={date}&endDate={date}",
   "notify": {
     "channels": [

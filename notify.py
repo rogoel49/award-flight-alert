@@ -76,7 +76,7 @@ def build_html(hits):
         f"<tr><td>{html.escape(str(h.get('alert_name', '')))}</td><td>{route_cell(h)}</td>"
         f"<td>{html.escape(str(h.get('date', '')))}</td>"
         f"<td>{html.escape(str(h.get('airlines', '')))}</td>"
-        f"<td>{html.escape(str(h.get('program', '')))}</td>"
+        f"<td>{html.escape(check.fmt_program(h))}</td>"
         f"<td align=\"right\">{h.get('miles', 0):,}</td>"
         f"<td align=\"right\">{html.escape(check.fmt_seats(h))}</td>"
         f"<td align=\"right\">{html.escape(fmt_duration(h.get('duration_min')))}</td>"
@@ -152,7 +152,7 @@ def macos_banner(h):
              f"{h.get('miles', 0):,} mi {h.get('cabin', '')}").rstrip()
     subtitle = f"{h.get('date', '?')} \u00b7 {h.get('airlines', '?')}"
     if h.get("program"):
-        subtitle += f" via {h['program']}"
+        subtitle += f" via {check.fmt_program(h)}"
     seats = check.fmt_seats(h)
     message = f"{seats} seat{'' if seats == '1' else 's'} \u00b7 {fmt_note(h)}"
     if h.get("duration_min"):

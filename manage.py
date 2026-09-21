@@ -26,6 +26,7 @@ import sys
 from datetime import datetime
 
 import check  # reuse content_id, resolve, load_config, ALERTS_PATH, _atomic_write
+import wallet
 
 ALERTS_PATH = check.ALERTS_PATH
 LOCK_PATH = ALERTS_PATH + ".lock"
@@ -95,11 +96,16 @@ def _resolved_view(alert):
     """The alert plus its effective params (after defaults merge), so an agent can
     confirm an override actually took effect."""
     try:
-        defaults = check.load_config().get("defaults", {})
+        cfg = check.load_config()
     except (OSError, json.JSONDecodeError):
-        defaults = {}
+        cfg = {}
     view = dict(alert)
-    view["_resolved"] = check.resolve(alert, defaults)
+    view["_resolved"] = check.resolve(alert, cfg.get("defaults", {}))
+    try:
+        allowed, _ = wallet.resolve_programs(alert, cfg)
+    except wallet.WalletError:
+        allowed = None
+    view["_resolved"]["programs"] = sorted(allowed) if allowed is not None else "all"
     return view
 
 
@@ -113,6 +119,12 @@ def cmd_add(args):
         valid = [*check.CABIN_PREFIX, check.ANY_CABIN]
         if args.cabin not in valid:
             _fail(f"invalid cabin '{args.cabin}' (expected one of: {', '.join(valid)})")
+    programs = None
+    if args.programs:
+        programs = sorted({p.strip().lower() for p in args.programs.split(",") if p.strip()})
+        for p in programs:
+            if p not in wallet.SOURCES:
+                _fail(f"unknown program '{p}' (expected one of: {', '.join(wallet.SOURCES)})")
     if args.max_miles is not None and args.max_miles <= 0:
         _fail("--max-miles must be positive")
     if args.min_seats is not None and args.min_seats < 1:
@@ -130,6 +142,7 @@ def cmd_add(args):
         "max_miles": args.max_miles,
         "min_seats": args.min_seats,
         "only_direct": True if args.only_direct else None,
+        "programs": programs,
         "start_date": start,
         "end_date": end,
         "enabled": True,
@@ -159,6 +172,21 @@ def cmd_list(args):
         print(f"[{flag}] {a.get('id')}  {a.get('name', '')}  "
               f"{','.join(a.get('origins', []))}->{','.join(a.get('destinations', []))}")
     print(f"{len(alerts)} alert(s)", file=sys.stderr)
+
+
+def cmd_wallet(args):
+    """Read-only: which programs the configured wallet makes bookable, and how."""
+    try:
+        fund = wallet.funding(check.load_config())
+    except wallet.WalletError as e:
+        _fail(str(e))
+    except (OSError, json.JSONDecodeError):
+        fund = None
+    if fund is None:
+        _ok({"configured": False, "programs": "all",
+             "hint": "set wallet.programs / wallet.currencies in config.json"})
+        return
+    _ok({"configured": True, "programs": {p: fund[p] for p in sorted(fund)}})
 
 
 def _mutate_by_id(alert_id, fn, action):
@@ -200,9 +228,14 @@ def build_parser():
     a.add_argument("--max-miles", dest="max_miles", type=int, default=None)
     a.add_argument("--min-seats", dest="min_seats", type=int, default=None)
     a.add_argument("--only-direct", dest="only_direct", action="store_true")
+    a.add_argument("--programs", default=None,
+                   help="only these award programs, comma-separated (default: your wallet, else all)")
     a.add_argument("--start", default=None, help="YYYY-MM-DD (else rolling window)")
     a.add_argument("--end", default=None, help="YYYY-MM-DD")
     a.set_defaults(func=cmd_add)
+
+    w = sub.add_parser("wallet", help="show which programs your wallet can book")
+    w.set_defaults(func=cmd_wallet)
 
     lst = sub.add_parser("list", help="list alerts")
     lst.add_argument("--json", action="store_true", help="machine-readable output")

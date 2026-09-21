@@ -50,7 +50,7 @@ def _coerce_ints(row):
 
 
 def build_search_url(base_url, origin, dest, cabin, start_date, end_date, take=500,
-                     skip=0, cursor=None):
+                     skip=0, cursor=None, sources=None):
     params = {
         "origin_airport": origin,
         "destination_airport": dest,
@@ -61,6 +61,8 @@ def build_search_url(base_url, origin, dest, cabin, start_date, end_date, take=5
     }
     if cabin:  # omitted -> rows for every cabin (each row carries all Y/W/J/F fields)
         params["cabin"] = cabin
+    if sources:  # only these programs — fewer rows, fewer pages
+        params["sources"] = ",".join(sorted(sources))
     if cursor is not None:  # page N>1: the API wants the first page's cursor + a row offset
         params["cursor"] = str(cursor)
         params["skip"] = str(skip)
@@ -101,7 +103,7 @@ def _get_json(url, api_key, label, urlopen, timeout, max_retries):
 
 def search(base_url, api_key, origin, dest, cabin, start_date, end_date,
            take=500, timeout=30, rate_limit_sleep=0.4, max_retries=2, max_pages=10,
-           _urlopen=None):
+           sources=None, _urlopen=None):
     """Query one origin->dest leg. Returns a list of native-shaped rows.
 
     Follows the API's ``hasMore``/``cursor`` pagination so a wide window isn't
@@ -118,7 +120,7 @@ def search(base_url, api_key, origin, dest, cabin, start_date, end_date,
     rows, cursor = [], None
     for _page in range(max_pages):
         url = build_search_url(base_url, origin, dest, cabin, start_date, end_date,
-                               take, skip=len(rows), cursor=cursor)
+                               take, skip=len(rows), cursor=cursor, sources=sources)
         payload = _get_json(url, api_key, label, urlopen, timeout, max_retries)
         page = payload.get("data") or []
         rows.extend(page)

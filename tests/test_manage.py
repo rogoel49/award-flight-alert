@@ -71,6 +71,17 @@ class TestManage(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.read()["alerts"][0]["cabin"], "any")
 
+    def test_programs_validated_and_stored_sorted(self):
+        r = self.run_cli(["add", "--name", "x", "--from", "SFO", "--to", "HND",
+                          "--programs", "United,aeroplan"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.read()["alerts"][0]["programs"], ["aeroplan", "united"])
+        self.assertEqual(json.loads(r.stdout)["alert"]["_resolved"]["programs"],
+                         ["aeroplan", "united"])
+        r = self.run_cli(["add", "--name", "y", "--from", "SFO", "--to", "HND",
+                          "--programs", "untied"])
+        self.assertNotEqual(r.returncode, 0)
+
     def test_cabin_normalized_to_lowercase(self):
         r = self.run_cli(["add", "--name", "x", "--from", "SFO", "--to", "NRT",
                           "--cabin", "First"])
