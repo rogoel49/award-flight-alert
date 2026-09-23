@@ -104,6 +104,13 @@ class TestSearch(unittest.TestCase):
                                  _urlopen=urlopen_returning(body, captured))
         self.assertEqual((len(rows), len(captured)), (3, 3))
 
+    def test_connection_reset_is_retried_then_search_error(self):
+        def urlopen(req, timeout=None):
+            raise ConnectionResetError(54, "Connection reset by peer")
+        with self.assertRaises(seats_aero.SearchError):
+            seats_aero.search("https://x/partnerapi", "K", "SFO", "NRT", "business",
+                              "2026-11-01", "2026-11-30", rate_limit_sleep=0, _urlopen=urlopen)
+
     def test_401_raises_auth_error(self):
         err = urllib.error.HTTPError("u", 401, "Unauthorized", None, None)
         with self.assertRaises(seats_aero.AuthError):

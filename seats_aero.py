@@ -11,7 +11,6 @@ Trip detail (duration, connections, stops) comes back inline on each row under
 ``/trips/{id}`` call.
 """
 import json
-import socket
 import sys
 import time
 import urllib.error
@@ -90,7 +89,7 @@ def _get_json(url, api_key, label, urlopen, timeout, max_retries):
                 last_err = e
                 continue
             raise SearchError(f"HTTP {e.code} for {label}") from e
-        except (urllib.error.URLError, TimeoutError, socket.timeout) as e:
+        except (urllib.error.URLError, OSError) as e:  # OSError: reset, timeout, DNS, TLS
             last_err = e
             if attempt < max_retries:
                 time.sleep(attempt + 1)
